@@ -1,0 +1,89 @@
+{
+  "name": "service-counting",
+  "description": "Jalat Counting Service: counts parcels crossing a line or entering an area on camera (YOLO26 ONNX, no Python at runtime)",
+  "version": "1.0.0",
+  "private": true,
+  "engines": {
+    "node": ">= 18.17.0"
+  },
+  "scripts": {
+    "dev": "nest start --watch",
+    "build": "nest build --tsc",
+    "prestart": "yarn run build",
+    "start": "cross-env NODE_ENV=production pm2 start process.json --env production --only service-counting",
+    "prestart:dev": "yarn run build",
+    "start:dev": "cross-env NODE_ENV=development pm2 start process.json --env development --only service-counting",
+    "prestart:uat": "yarn run build",
+    "start:uat": "cross-env NODE_ENV=uat pm2 start process.json --env uat --only service-counting-uat",
+    "format": "prettier \"**/*.ts\" --write && git status",
+    "lint": "eslint \"src/**/*.ts\" --fix --ignore-pattern \"**/*.spec.ts\"",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage --coverageDirectory=coverage",
+    "model:inspect": "ts-node -r tsconfig-paths/register scripts/inspect-model.ts",
+    "db:seed": "ts-node -r tsconfig-paths/register scripts/seed.ts"
+  },
+  "lint-staged": {
+    "*.ts": [
+      "eslint --fix"
+    ],
+    "*.{ts,json}": [
+      "prettier --write"
+    ]
+  },
+  "dependencies": {
+    "@apollo/server": "4.9.1",
+    "@nestjs/apollo": "12.0.7",
+    "@nestjs/common": "9.4.2",
+    "@nestjs/config": "2.3.2",
+    "@nestjs/core": "9.4.2",
+    "@nestjs/graphql": "12.0.8",
+    "@nestjs/jwt": "10.0.3",
+    "@nestjs/platform-express": "9.4.2",
+    "@nestjs/schedule": "2.2.2",
+    "@nestjs/swagger": "6.3.0",
+    "@nestjs/typeorm": "9.0.1",
+    "class-transformer": "0.5.1",
+    "class-validator": "0.14.0",
+    "compression": "1.7.4",
+    "cross-env": "7.0.3",
+    "ffmpeg-static": "5.2.0",
+    "graphql": "16.7.1",
+    "helmet": "7.0.0",
+    "ioredis": "5.3.2",
+    "jpeg-js": "0.4.4",
+    "lodash": "4.17.21",
+    "moment": "2.29.4",
+    "moment-timezone": "0.5.43",
+    "morgan": "1.10.0",
+    "mqtt": "4.2.1",
+    "onnxruntime-node": "1.18.0",
+    "pg": "8.11.2",
+    "reflect-metadata": "0.1.13",
+    "rxjs": "7.8.1",
+    "swagger-ui-express": "4.6.3",
+    "typeorm": "0.3.16"
+  },
+  "devDependencies": {
+    "@nestjs/cli": "9.5.0",
+    "@nestjs/testing": "9.4.2",
+    "@types/compression": "1.7.2",
+    "@types/express": "4.17.17",
+    "@types/jest": "29.5.1",
+    "@types/lodash": "4.14.195",
+    "@types/morgan": "1.9.4",
+    "@typescript-eslint/eslint-plugin": "5.59.7",
+    "@typescript-eslint/parser": "5.59.7",
+    "eslint": "8.41.0",
+    "eslint-config-prettier": "8.8.0",
+    "eslint-plugin-import": "2.27.5",
+    "eslint-plugin-prettier": "4.2.1",
+    "jest": "29.5.0",
+    "lint-staged": "13.2.2",
+    "prettier": "2.8.8",
+    "ts-jest": "29.1.0",
+    "ts-node": "10.9.1",
+    "tsconfig-paths": "4.2.0",
+    "typescript": "5.0.4"
+  }
+}

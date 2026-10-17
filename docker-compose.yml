@@ -1,0 +1,29 @@
+# Local development only: Postgres, Redis and an MQTT broker for the counting service.
+#   docker compose up -d
+# Ports are moved off the defaults so they do not clash with other services on the machine.
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: jalat
+      POSTGRES_PASSWORD: jalat
+      POSTGRES_DB: jalat_counting
+    ports:
+      - '5433:5432'
+    volumes:
+      - counting-pg:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - '6380:6379'
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    command: sh -c "printf 'listener 1883\nallow_anonymous true\nlistener 9001\nprotocol websockets\n' > /tmp/m.conf && mosquitto -c /tmp/m.conf"
+    ports:
+      - '1884:1883'
+      - '9002:9001'
+
+volumes:
+  counting-pg:

@@ -1,0 +1,1 @@
+export const IOREDIS_TOKEN = 'IOREDIS_INJECT_TOKEN';
