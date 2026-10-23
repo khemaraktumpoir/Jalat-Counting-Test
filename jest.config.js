@@ -9,6 +9,8 @@ module.exports = {
   moduleFileExtensions: ['ts', 'tsx', 'js', 'json'],
   collectCoverageFrom: ['src/**/*.{js,jsx,tsx,ts}', '!**/node_modules/**', '!**/vendor/**'],
   coverageReporters: ['json', 'lcov'],
+  // Tests live in src/ only (training/ holds the Ultralytics repo and its Python environments).
+  roots: ['<rootDir>/src'],
   testRegex: '/src/.*\\.(test|spec).(ts|tsx|js)$',
   transform: {
     '^.+\\.tsx?$': 'ts-jest'

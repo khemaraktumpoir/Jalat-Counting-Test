@@ -1,0 +1,45 @@
+name: CICD Workflow - UAT (Counting)
+
+on:
+  push:
+    branches:
+      - uat
+
+jobs:
+
+  build_and_push_job:
+    uses: ./.github/workflows/build-and-push-temp.yml
+    secrets:
+      image_name: ${{ secrets.UAT_IMAGE_NAME }}
+      registry: ${{ secrets.UAT_REGISTRY }}
+      region: ${{ secrets.UAT_REGION }}
+      swr_org_name: ${{ secrets.UAT_SWR_ORG_NAME }}
+      access_key_id: ${{ secrets.UAT_ACCESS_KEY_ID }}
+      secret_access_key: ${{ secrets.UAT_SECRET_ACCESS_KEY }}
+  
+  deploy_job:
+    needs: build_and_push_job
+    uses: ./.github/workflows/deploy-temp.yml
+    with:
+      npm_dependency: "@huaweicloud/huaweicloud-sdk-csms"
+      script_csms_path: ./scripts/fetch_csms_secrets.js
+      service_replica: ${{ vars.UAT_SERVICE_REPLICA }}
+    secrets:
+      hw_access_key: ${{ secrets.UAT_ACCESS_KEY_ID }}
+      hw_secret_access_key: ${{ secrets.UAT_SECRET_ACCESS_KEY }}
+      hw_kms_endpoint: ${{ secrets.UAT_KMS_ENDPOINT }}
+      hw_project_id: ${{ secrets.UAT_KMS_PROJECT_ID }}
+      hw_kms_secret_name: ${{ secrets.UAT_KMS_SECRET_NAME }}
+      hw_kms_version_id: ${{ secrets.UAT_KMS_VERSION_ID }}
+      private_key: ${{ secrets.UAT_HUAWEI_PRIVATE_KEY }}
+      username: ${{ secrets.UAT_USERNAME }}
+      hostname: ${{ secrets.UAT_HOSTNAME }}
+      access_key_id: ${{ secrets.UAT_ACCESS_KEY_ID }}
+      swr_login_key: ${{ secrets.UAT_SWR_LOGIN_KEY }}
+      swr_org_name: ${{ secrets.UAT_SWR_ORG_NAME }}
+      image_name: ${{ secrets.UAT_IMAGE_NAME }}
+      registry: ${{ secrets.UAT_REGISTRY }}
+      region: ${{ secrets.UAT_REGION }}
+      docker_service_name: ${{ secrets.UAT_DOCKER_SERVICE_NAME }}
+      docker_network_name: ${{ secrets.UAT_DOCKER_NETWORK_NAME }}
+

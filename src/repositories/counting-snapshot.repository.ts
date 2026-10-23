@@ -64,6 +64,57 @@ export class CountingSnapshotRepository extends Repository<CountingSnapshotEntit
     return totals;
   }
 
+  /** Each camera's counts saved between from and to (by the hour they belong to). */
+  async $totalsByCamera(
+    cameraIds: string[],
+    from: Date,
+    to: Date
+  ): Promise<Map<string, CountTotals>> {
+    const totals = new Map<string, CountTotals>();
+    if (!cameraIds.length) return totals;
+    const rows = await this.createQueryBuilder('s')
+      .where('s."cameraId" IN (:...cameraIds)', { cameraIds })
+      .andWhere('s."periodStart" >= :from AND s."periodStart" < :to', { from, to })
+      .getMany();
+    for (const row of rows) {
+      const t = totals.get(row.cameraId) ?? { in: 0, out: 0, byClass: {} };
+      t.in += row.in;
+      t.out += row.out;
+      mergeByClass(t.byClass, row.byClass);
+      totals.set(row.cameraId, t);
+    }
+    return totals;
+  }
+
+  /** Counts per hour or day (Phnom Penh) and camera between from and to, oldest first. */
+  async $bucketsByCamera(
+    cameraIds: string[],
+    from: Date,
+    to: Date,
+    bucket: E.CountBucketEnum
+  ): Promise<{ cameraId: string; periodStart: Date; in: number; out: number }[]> {
+    if (!cameraIds.length) return [];
+    const unit = bucket === E.CountBucketEnum.DAY ? 'day' : 'hour';
+    const period = `date_trunc('${unit}', s."periodStart" AT TIME ZONE '${C.TIME_ZONE}') AT TIME ZONE '${C.TIME_ZONE}'`;
+    const rows = await this.createQueryBuilder('s')
+      .select('s."cameraId"', 'cameraId')
+      .addSelect(period, 'periodStart')
+      .addSelect('SUM(s."in")', 'in')
+      .addSelect('SUM(s."out")', 'out')
+      .where('s."cameraId" IN (:...cameraIds)', { cameraIds })
+      .andWhere('s."periodStart" >= :from AND s."periodStart" < :to', { from, to })
+      .groupBy('s."cameraId"')
+      .addGroupBy(period)
+      .orderBy(period, 'ASC')
+      .getRawMany<{ cameraId: string; periodStart: Date; in: string; out: string }>();
+    return rows.map(r => ({
+      cameraId: r.cameraId,
+      periodStart: new Date(r.periodStart),
+      in: Number(r.in),
+      out: Number(r.out)
+    }));
+  }
+
   /** Counts per hour or per day (Phnom Penh) between from and to, oldest first. */
   async $history(
     cameraId: string,

@@ -1,0 +1,54 @@
+# Local development, on top of deploy/docker-compose.yml: a Postgres and an MQTT broker for the
+# counting service, and the service pointed at them. Ports are moved off the defaults so they do not
+# clash with other services on the machine. Used when the root .env has
+#   COMPOSE_FILE=deploy/docker-compose.yml;deploy/docker-compose.local.yml   (Linux / macOS: ":")
+# Redis is NOT here: a sign-in is checked against the User Service's sessions (sessions:<token>),
+# so the service reads the Redis the local User Service writes to (this machine's :6379), and its
+# JWT_SECRET in .env must be the User Service's.
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: jalat
+      POSTGRES_PASSWORD: jalat
+      POSTGRES_DB: jalat_counting
+    ports:
+      - '5433:5432'
+    volumes:
+      - counting-pg:/var/lib/postgresql/data
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    command: sh -c "printf 'listener 1883\nallow_anonymous true\nlistener 9001\nprotocol websockets\n' > /tmp/m.conf && mosquitto -c /tmp/m.conf"
+    ports:
+      - '1884:1883'
+      - '9002:9001'
+
+  counting:
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_SCHEMA: jalat_counting
+      DB_USERNAME: jalat
+      DB_PASSWORD: jalat
+      DB_SYNC: 'true'
+      REDIS_HOST: ${COUNTING_REDIS_HOST:-host.docker.internal}
+      REDIS_PORT: ${COUNTING_REDIS_PORT:-6379}
+      # MQTT_* come from .env (the apps' dev broker). For the local mosquitto above instead, set
+      # MQTT_HOST=mqtt://mosquitto and MQTT_PORT=1883 in .env.
+    volumes:
+      - ../samples:/usr/src/samples:ro
+      # Photos to count by folder (countingPhotoFolder: photos/...).
+      - ../photos:/usr/src/photos:ro
+    # Open on this machine as before (the warehouse app's dev server proxies to :9096).
+    ports: !override
+      - '9096:9096'
+    mem_limit: 0
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    depends_on:
+      - postgres
+      - mosquitto
+
+volumes:
+  counting-pg:

@@ -14,6 +14,10 @@ export interface CameraWorkerData {
   labels: Record<number, string>;
   modelPath: string;
   provider: string;
+  /** CPU threads for the model (MODEL_THREADS); 0 = all cores. */
+  threads: number;
+  /** MODEL_PATH=ultralytics:<url>: the Ultralytics Platform API key. */
+  apiKey?: string;
   ffmpegPath: string;
   reconnectMaxMs: number;
 }
@@ -26,6 +30,8 @@ export type ToWorker =
   | { type: 'reset' }
   | { type: 'snapshot'; requestId: number }
   | { type: 'preview'; on: boolean }
+  /** A phone camera ("phone:"): one JPEG the warehouse app sent. */
+  | { type: 'frame'; jpeg: Uint8Array }
   | { type: 'stop' };
 
 /** Worker → main thread. */

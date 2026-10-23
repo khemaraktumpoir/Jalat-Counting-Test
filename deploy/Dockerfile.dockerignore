@@ -3,3 +3,5 @@ dist
 .git
 .env
 models/*.onnx
+deploy/ssh_key
+training/

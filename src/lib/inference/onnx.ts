@@ -14,7 +14,12 @@ export interface OnnxModel {
  * Loads the YOLO26 ONNX model once (onnxruntime-node). Each camera worker loads its own (a session
  * cannot be shared between threads); the API loads one at startup to check the file and report it.
  */
-export async function loadOnnxModel(modelPath: string, provider = 'cpu'): Promise<OnnxModel> {
+export async function loadOnnxModel(
+  modelPath: string,
+  provider = 'cpu',
+  /** CPU threads for one inference; 0 = onnxruntime's choice (all cores). */
+  threads = 0
+): Promise<OnnxModel> {
   if (!existsSync(modelPath)) {
     throw new Error(
       `Model not found at ${modelPath}: export YOLO26 to ONNX and place it there (see README).`
@@ -25,7 +30,10 @@ export async function loadOnnxModel(modelPath: string, provider = 'cpu'): Promis
   const ort = require('onnxruntime-node') as typeof import('onnxruntime-node');
   const session = await ort.InferenceSession.create(modelPath, {
     executionProviders: [provider],
-    graphOptimizationLevel: 'all'
+    graphOptimizationLevel: 'all',
+    // Each camera has its own session: on a small server, cap its threads (MODEL_THREADS) so the
+    // cameras and the API share the cores instead of fighting over them.
+    ...(threads > 0 ? { intraOpNumThreads: threads, interOpNumThreads: 1 } : {})
   });
   const [inputName] = session.inputNames;
   const [outputName] = session.outputNames;

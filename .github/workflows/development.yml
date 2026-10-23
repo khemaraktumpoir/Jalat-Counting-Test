@@ -1,0 +1,45 @@
+name: CICD Workflow - Development (Counting)
+
+on:
+  push:
+    branches:
+      - development
+
+jobs:
+
+  build_and_push_job:
+    uses: ./.github/workflows/build-and-push-temp.yml
+    secrets:
+      image_name: ${{ secrets.IMAGE_NAME }}
+      registry: ${{ secrets.REGISTRY }}
+      region: ${{ secrets.REGION }}
+      swr_org_name: ${{ secrets.SWR_ORG_NAME }}
+      access_key_id: ${{ secrets.ACCESS_KEY_ID }}
+      secret_access_key: ${{ secrets.SECRET_ACCESS_KEY }}
+  
+  deploy_job:
+    needs: build_and_push_job
+    uses: ./.github/workflows/deploy-temp.yml
+    with:
+      npm_dependency: "@huaweicloud/huaweicloud-sdk-csms"
+      script_csms_path: ./scripts/fetch_csms_secrets.js
+      service_replica: ${{ vars.SERVICE_REPLICA }}
+    secrets:
+      hw_access_key: ${{ secrets.ACCESS_KEY_ID }}
+      hw_secret_access_key: ${{ secrets.SECRET_ACCESS_KEY }}
+      hw_kms_endpoint: ${{ secrets.KMS_ENDPOINT }}
+      hw_project_id: ${{ secrets.KMS_PROJECT_ID }}
+      hw_kms_secret_name: ${{ secrets.KMS_SECRET_NAME }}
+      hw_kms_version_id: ${{ secrets.KMS_VERSION_ID }}
+      private_key: ${{ secrets.HUAWEI_PRIVATE_KEY }}
+      username: ${{ secrets.USERNAME }}
+      hostname: ${{ secrets.HOSTNAME }}
+      access_key_id: ${{ secrets.ACCESS_KEY_ID }}
+      swr_login_key: ${{ secrets.SWR_LOGIN_KEY }}
+      swr_org_name: ${{ secrets.SWR_ORG_NAME }}
+      image_name: ${{ secrets.IMAGE_NAME }}
+      registry: ${{ secrets.REGISTRY }}
+      region: ${{ secrets.REGION }}
+      docker_service_name: ${{ secrets.DOCKER_SERVICE_NAME }}
+      docker_network_name: ${{ secrets.DOCKER_NETWORK_NAME }}
+

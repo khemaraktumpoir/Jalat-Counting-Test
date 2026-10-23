@@ -1,5 +1,7 @@
 import { ChildProcessWithoutNullStreams, spawn } from 'child_process';
 import { EventEmitter } from 'events';
+import { existsSync } from 'fs';
+import { decode as decodeJpeg } from 'jpeg-js';
 
 import type { Frame } from '@lib/counting';
 
@@ -25,6 +27,56 @@ export function resolveFfmpeg(configured?: string): string {
 }
 
 const isStream = (url: string) => /^(rtsp|rtmp|http|https|udp|tcp):\/\//i.test(url);
+
+/**
+ * A phone camera ("phone:"): no stream to open — the warehouse app sends the phone's camera frames
+ * (POST /api/v1/counting/cameras/:id/frames) while its page is open, straight into the worker.
+ */
+export const PHONE_SOURCE = 'phone:';
+export const isPhoneSource = (url: string) => url.trim().toLowerCase().startsWith(PHONE_SOURCE);
+
+/**
+ * A manual counter ("manual:"): no camera at all — warehouse staff count parcels by scanning
+ * their QR stickers (each once since the last reset) or tapping +1, with addManualCount. It has
+ * the cameras' list, live counts, history and reset.
+ */
+export const MANUAL_SOURCE = 'manual:';
+export const isManualSource = (url: string) => url.trim().toLowerCase().startsWith(MANUAL_SOURCE);
+
+/**
+ * A video file that is not there, said plainly (ffmpeg's own message for "C:\…" on Linux is "Did you
+ * mean file:C:\…?"). A relative path is from the service's folder (samples/…); null when it is there
+ * or the source is a camera.
+ */
+export function missingFileError(url: string): string | null {
+  if (isStream(url) || isPhoneSource(url) || isManualSource(url) || existsSync(url)) return null;
+  const foreign = process.platform !== 'win32' && /^[a-z]:[\\/]/i.test(url);
+  return `The video file is not there: ${url}${
+    foreign
+      ? ' (a Windows path: use a path on this machine, or one from the service folder, e.g. samples/…)'
+      : ''
+  }`;
+}
+
+/** A phone's JPEG as an rgb24 frame of the camera's size (scaled, nearest pixel, when it differs). */
+export function frameOfJpeg(jpeg: Uint8Array, width: number, height: number): Frame {
+  const image = decodeJpeg(jpeg, { useTArray: true, formatAsRGBA: false, maxResolutionInMP: 20 });
+  const rgb = image.data as Uint8Array;
+  if (image.width === width && image.height === height) return { data: rgb, width, height };
+  const data = new Uint8Array(width * height * 3);
+  for (let y = 0; y < height; y++) {
+    const sy = Math.min(image.height - 1, Math.floor((y * image.height) / height));
+    for (let x = 0; x < width; x++) {
+      const sx = Math.min(image.width - 1, Math.floor((x * image.width) / width));
+      const from = (sy * image.width + sx) * 3;
+      const to = (y * width + x) * 3;
+      data[to] = rgb[from];
+      data[to + 1] = rgb[from + 1];
+      data[to + 2] = rgb[from + 2];
+    }
+  }
+  return { data, width, height };
+}
 
 // A camera that does not answer fails after this long instead of waiting for ever (microseconds).
 const IO_TIMEOUT_US = '10000000';
@@ -58,6 +110,12 @@ export class FrameSource extends EventEmitter {
 
   start(): void {
     const { url, fps, width, height, loop = false, realtime = true, ffmpegPath } = this.options;
+    const missing = missingFileError(url);
+    if (missing) {
+      // As ffmpeg's own failure: after start() returns, so listeners are in place.
+      setImmediate(() => this.emit('end', { error: missing }));
+      return;
+    }
     const args = [
       '-hide_banner',
       '-loglevel', 'error',
@@ -112,6 +170,8 @@ export function grabJpeg(
   timeoutMs = 15_000
 ): Promise<Buffer> {
   const { url, width, height, ffmpegPath } = options;
+  const missing = missingFileError(url);
+  if (missing) return Promise.reject(new Error(missing));
   const args = [
     '-hide_banner',
     '-loglevel', 'error',

@@ -1,0 +1,44 @@
+name: Build and Push Docker Image
+
+on:
+  workflow_call:
+    secrets:
+      access_key_id:
+        required: true
+      secret_access_key:
+        required: true
+      image_name:
+        required: true
+      registry:
+        required: true
+      region:
+        required: true
+      swr_org_name:
+        required: true
+
+jobs:
+  build_and_push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v2
+
+      - name: Build the docker image
+        run: docker build -f deploy/Dockerfile -t ${{ secrets.image_name }} .
+
+      - name: Add image tags
+        run: |
+          docker tag ${{ secrets.image_name }} ${{ secrets.registry }}/${{ secrets.swr_org_name }}/${{ secrets.image_name }}:${{ github.sha }}
+          docker tag ${{ secrets.image_name }} ${{ secrets.registry }}/${{ secrets.swr_org_name }}/${{ secrets.image_name }}:latest
+
+      - name: Configure Cloud Registry
+        uses: liusheng/swr-login@v1
+        with:
+          region: ${{ secrets.region }}
+          access-key-id: ${{ secrets.access_key_id }}
+          access-key-secret: ${{ secrets.secret_access_key }}
+
+      - name: Push the Docker images with both tags
+        run: |
+          docker push ${{ secrets.registry }}/${{ secrets.swr_org_name }}/${{ secrets.image_name }}:${{ github.sha }}
+          docker push ${{ secrets.registry }}/${{ secrets.swr_org_name }}/${{ secrets.image_name }}:latest

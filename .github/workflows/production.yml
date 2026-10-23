@@ -1,0 +1,45 @@
+name: CICD Workflow - Production (Counting)
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+
+  build_and_push_job:
+    uses: ./.github/workflows/build-and-push-temp.yml
+    secrets:
+      image_name: ${{ secrets.PROD_IMAGE_NAME }}
+      registry: ${{ secrets.PROD_REGISTRY }}
+      region: ${{ secrets.PROD_REGION }}
+      swr_org_name: ${{ secrets.PROD_SWR_ORG_NAME }}
+      access_key_id: ${{ secrets.PROD_ACCESS_KEY_ID }}
+      secret_access_key: ${{ secrets.PROD_SECRET_ACCESS_KEY }}
+  
+  deploy_job:
+    needs: build_and_push_job
+    uses: ./.github/workflows/deploy-temp.yml
+    with:
+      npm_dependency: "@huaweicloud/huaweicloud-sdk-csms"
+      script_csms_path: ./scripts/fetch_csms_secrets.js
+      service_replica: ${{ vars.PROD_SERVICE_REPLICA }}
+    secrets:
+      hw_access_key: ${{ secrets.PROD_ACCESS_KEY_ID }}
+      hw_secret_access_key: ${{ secrets.PROD_SECRET_ACCESS_KEY }}
+      hw_kms_endpoint: ${{ secrets.PROD_KMS_ENDPOINT }}
+      hw_project_id: ${{ secrets.PROD_KMS_PROJECT_ID }}
+      hw_kms_secret_name: ${{ secrets.PROD_KMS_SECRET_NAME }}
+      hw_kms_version_id: ${{ secrets.PROD_KMS_VERSION_ID }}
+      private_key: ${{ secrets.PROD_HUAWEI_PRIVATE_KEY }}
+      username: ${{ secrets.PROD_USERNAME }}
+      hostname: ${{ secrets.PROD_HOSTNAME }}
+      access_key_id: ${{ secrets.PROD_ACCESS_KEY_ID }}
+      swr_login_key: ${{ secrets.PROD_SWR_LOGIN_KEY }}
+      swr_org_name: ${{ secrets.PROD_SWR_ORG_NAME }}
+      image_name: ${{ secrets.PROD_IMAGE_NAME }}
+      registry: ${{ secrets.PROD_REGISTRY }}
+      region: ${{ secrets.PROD_REGION }}
+      docker_service_name: ${{ secrets.PROD_DOCKER_SERVICE_NAME }}
+      docker_network_name: ${{ secrets.PROD_DOCKER_NETWORK_NAME }}
+

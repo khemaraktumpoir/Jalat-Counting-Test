@@ -204,3 +204,123 @@ export class CountingHistoryArgs {
   @IsEnum(E.CountBucketEnum)
   bucket!: E.CountBucketEnum;
 }
+
+@InputType({ description: 'A parcel counted by hand on a manual counter ("manual:").' })
+export class AddManualCountInput {
+  @Field(() => ID)
+  @IsUUID()
+  cameraId!: string;
+
+  @Field({
+    nullable: true,
+    description:
+      'The QR code scanned: counted once since the last reset. None: a tap ("no sticker").'
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  code?: string;
+
+  @Field(() => Int, {
+    nullable: true,
+    defaultValue: 1,
+    description: '1 counts it; -1 takes it back (that code, or one tap).'
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(-1)
+  @Max(1)
+  delta?: number;
+}
+
+@ArgsType()
+export class CountingOverviewArgs {
+  @Field()
+  @IsDateString()
+  from!: string;
+
+  @Field()
+  @IsDateString()
+  to!: string;
+
+  @Field(() => E.CountBucketEnum, { defaultValue: E.CountBucketEnum.HOUR })
+  @IsEnum(E.CountBucketEnum)
+  bucket!: E.CountBucketEnum;
+}
+
+@ArgsType()
+export class PhotoFolderArgs {
+  @Field({
+    description:
+      'A folder on the counting service, inside PHOTO_ROOTS (default photos, samples): e.g. "photos/batch-21-10"'
+  })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(500)
+  path!: string;
+
+  @Field(() => Float, {
+    nullable: true,
+    description: 'Minimum score (0–1); DEFAULT_CONF when left out.'
+  })
+  @IsOptional()
+  @IsNumber()
+  @Min(0.05)
+  @Max(0.95)
+  conf?: number;
+
+  @Field(() => [Int], { nullable: true, description: 'Class ids to count; all when left out.' })
+  @IsOptional()
+  @IsArray()
+  @IsInt({ each: true })
+  classes?: number[];
+
+  @Field(() => Int, {
+    defaultValue: 200,
+    description: 'Photos to count at most (by name), up to 500.'
+  })
+  @IsInt()
+  @Min(1)
+  @Max(500)
+  limit!: number;
+}
+
+@ArgsType()
+export class PhotoBatchesArgs {
+  @Field({ description: 'From (ISO date-time)' })
+  @IsDateString()
+  from!: string;
+
+  @Field({ description: 'To (ISO date-time)' })
+  @IsDateString()
+  to!: string;
+}
+
+@ArgsType()
+export class PhotoRecordsArgs {
+  @Field(() => ID, { nullable: true, description: "One batch's photos, in the order picked." })
+  @IsOptional()
+  @IsUUID()
+  batchId?: string;
+
+  @Field({ nullable: true, description: 'Only the copies (between from and to).' })
+  @IsOptional()
+  @IsBoolean()
+  copiesOnly?: boolean;
+
+  @Field({ nullable: true })
+  @IsOptional()
+  @IsDateString()
+  from?: string;
+
+  @Field({ nullable: true })
+  @IsOptional()
+  @IsDateString()
+  to?: string;
+
+  @Field(() => Int, { defaultValue: 200 })
+  @IsInt()
+  @Min(1)
+  @Max(1000)
+  limit!: number;
+}

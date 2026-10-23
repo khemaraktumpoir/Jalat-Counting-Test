@@ -1,4 +1,10 @@
-import { Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  OnApplicationBootstrap,
+  OnModuleDestroy
+} from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { join } from 'path';
 import { mergeByClass } from 'src/repositories/counting-snapshot.repository';
@@ -7,7 +13,7 @@ import { Worker } from 'worker_threads';
 import { C, E } from '@common';
 import { CountingCameraEntity, CountingRegionEntity } from '@entities';
 import { Counts, RegionShape } from '@lib/counting';
-import { grabJpeg } from '@lib/inference';
+import { grabJpeg, isManualSource, isPhoneSource } from '@lib/inference';
 import { MQTTService } from '@lib/mqtt';
 import {
   CountingCameraRepository,
@@ -103,7 +109,8 @@ export class CameraManagerService implements OnApplicationBootstrap, OnModuleDes
   }
 
   async start(camera: CountingCameraEntity): Promise<void> {
-    if (this.running.has(camera.id)) return;
+    // A manual counter has nothing to run: its counts come from addManualCount.
+    if (this.running.has(camera.id) || isManualSource(camera.sourceUrl)) return;
     const region = await this.regionRepo.findOne({ where: { cameraId: camera.id } });
     const data: CameraWorkerData = {
       cameraId: camera.id,
@@ -118,6 +125,8 @@ export class CameraManagerService implements OnApplicationBootstrap, OnModuleDes
       labels: this.inference.labels,
       modelPath: this.inference.modelPath,
       provider: this.inference.provider,
+      threads: this.inference.threads,
+      apiKey: this.inference.apiKey,
       ffmpegPath: this.inference.ffmpegPath,
       reconnectMaxMs: C.CAMERA_RECONNECT_MAX_MS
     };
@@ -230,12 +239,34 @@ export class CameraManagerService implements OnApplicationBootstrap, OnModuleDes
       });
       if (jpeg) return jpeg;
     }
+    if (isManualSource(camera.sourceUrl))
+      throw new NotFoundException('A manual counter has no camera picture.');
+    // A phone has nothing to grab: only what its page sends while the camera runs.
+    if (isPhoneSource(camera.sourceUrl))
+      throw new NotFoundException(
+        'No picture from the phone or PC yet: open this camera in the warehouse app on the device that films the belt and start filming.'
+      );
     return grabJpeg({
       url: camera.sourceUrl,
       width: camera.width,
       height: camera.height,
       ffmpegPath: this.inference.ffmpegPath
     });
+  }
+
+  /** A phone camera's frame (JPEG) for its worker; false when the camera is not running. */
+  pushFrame(cameraId: string, jpeg: Buffer): boolean {
+    const run = this.running.get(cameraId);
+    if (!run) return false;
+    // A copy of its own (express may hand a slice of a shared buffer), moved to the worker, not copied.
+    const bytes = new Uint8Array(jpeg);
+    run.worker.postMessage({ type: 'frame', jpeg: bytes } satisfies ToWorker, [bytes.buffer]);
+    return true;
+  }
+
+  /** A manual counter's counts since its reset, to the apps (MQTT), after a scan or a tap. */
+  publishTotals(cameraId: string, counts: Counts): void {
+    this.publishCount(cameraId, counts);
   }
 
   /** The annotated live preview (MJPEG): frames go to `listener` until the returned function is called. */
@@ -250,8 +281,11 @@ export class CameraManagerService implements OnApplicationBootstrap, OnModuleDes
     };
   }
 
-  /** Every hour: what each running camera counted since its last save. */
-  @Cron('0 * * * *')
+  /**
+   * Every minute: what each running camera counted since its last save (a crash loses at most a
+   * minute; the history still adds the rows up per hour or day).
+   */
+  @Cron('* * * * *')
   async saveAll(): Promise<void> {
     for (const [cameraId, run] of this.running) await this.flush(cameraId, run);
   }

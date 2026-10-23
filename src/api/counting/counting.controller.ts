@@ -1,9 +1,13 @@
 import {
+  BadRequestException,
+  ConflictException,
   Controller,
   Get,
+  HttpCode,
   NotFoundException,
   Param,
   ParseUUIDPipe,
+  Post,
   Req,
   Res,
   UseFilters
@@ -12,12 +16,15 @@ import { Request, Response } from 'express';
 
 import { Auth, RestExceptionFilter } from '@common';
 import { CameraManagerService, CountingService } from '@graphql/counting';
+import { isPhoneSource } from '@lib/inference';
 
 /**
  * What is not GraphQL: images. Both take the token as a header or ?access_token= (an <img> cannot
  * send a header).
  *   GET /api/v1/counting/cameras/:id/snapshot   one JPEG (the region editor's background)
  *   GET /api/v1/counting/cameras/:id/stream     MJPEG: the frames with the region, the IN arrow and the boxes
+ *   POST /api/v1/counting/cameras/:id/frames    a phone camera ("phone:"): one JPEG (body image/jpeg)
+ *                                               from the warehouse app's filming page (a phone's camera or a PC's webcam)
  */
 @UseFilters(new RestExceptionFilter())
 @Controller({ path: 'counting/cameras', version: '1' })
@@ -63,5 +70,19 @@ export class CountingController {
       Connection: 'close'
     });
     req.on('close', stop);
+  }
+
+  @Auth('ADMIN', 'OPERATION', 'MOBILE_WAREHOUSE')
+  @Post(':id/frames')
+  @HttpCode(204)
+  async frame(@Param('id', ParseUUIDPipe) id: string, @Req() req: Request): Promise<void> {
+    const camera = await this.service.camera(id, (req as any).user);
+    if (!isPhoneSource(camera.sourceUrl))
+      throw new BadRequestException('This camera is not a phone camera.');
+    const jpeg = req.body;
+    if (!Buffer.isBuffer(jpeg) || !jpeg.length)
+      throw new BadRequestException('Send one JPEG picture (Content-Type: image/jpeg).');
+    if (!this.manager.pushFrame(camera.id, jpeg))
+      throw new ConflictException('The camera is off: turn it on to count with the phone.');
   }
 }

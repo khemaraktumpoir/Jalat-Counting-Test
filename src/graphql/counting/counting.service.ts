@@ -9,8 +9,10 @@ import { hourStart, mergeByClass } from 'src/repositories/counting-snapshot.repo
 
 import { C, E } from '@common';
 import { CountingCameraEntity } from '@entities';
+import { isManualSource } from '@lib/inference';
 import {
   CountingCameraRepository,
+  CountingManualScanRepository,
   CountingRegionRepository,
   CountingSnapshotRepository
 } from '@repositories';
@@ -29,6 +31,7 @@ export class CountingService {
     private readonly cameraRepo: CountingCameraRepository,
     private readonly regionRepo: CountingRegionRepository,
     private readonly snapshotRepo: CountingSnapshotRepository,
+    private readonly manualScanRepo: CountingManualScanRepository,
     private readonly manager: CameraManagerService,
     private readonly inference: InferenceService
   ) {}
@@ -117,6 +120,7 @@ export class CountingService {
     await this.manager.stop(camera.id);
     await this.regionRepo.delete({ cameraId: camera.id });
     await this.snapshotRepo.delete({ cameraId: camera.id });
+    await this.manualScanRepo.delete({ cameraId: camera.id });
     await this.cameraRepo.delete(camera.id);
     return true;
   }
@@ -139,6 +143,70 @@ export class CountingService {
     const camera = await this.camera(id, viewer);
     await this.manager.reset(camera);
     return this.camera(id, viewer);
+  }
+
+  /**
+   * A parcel counted by hand: a scanned QR code (once since the last reset; again = duplicate,
+   * not counted), or a tap without a code. -1 takes back that code, or one tap. Saved as a count
+   * (history, "since reset") split into scanned / tapped, and sent to the apps live.
+   */
+  async addManualCount(
+    input: I.AddManualCountInput,
+    viewer: CountingViewer
+  ): Promise<M.ManualCountResult> {
+    const camera = await this.camera(input.cameraId, viewer);
+    if (!isManualSource(camera.sourceUrl))
+      throw new BadRequestException('This is a camera, not a manual counter.');
+    const delta = input.delta ?? 1;
+    if (delta !== 1 && delta !== -1) throw new BadRequestException('delta is 1 or -1.');
+    const code = input.code?.trim() || undefined;
+    const since = camera.countsResetAt;
+    const before = await this.snapshotRepo.$totalSince(camera.id, since);
+    const result = (counted: boolean, duplicate: boolean, totals = before) => ({
+      counted,
+      duplicate,
+      code,
+      total: totals.in,
+      scanned: totals.byClass[MANUAL_SCANNED]?.in ?? 0,
+      tapped: totals.byClass[MANUAL_TAPPED]?.in ?? 0
+    });
+
+    if (code) {
+      const scan = await this.manualScanRepo.$findSince(camera.id, code, since);
+      if (delta > 0 && scan) return result(false, true);
+      if (delta < 0 && !scan) return result(false, false);
+      if (delta > 0)
+        await this.manualScanRepo.insert({ cameraId: camera.id, code, createdBy: viewer.id });
+      else await this.manualScanRepo.delete(scan!.id);
+    } else if (delta < 0 && !(before.byClass[MANUAL_TAPPED]?.in > 0)) {
+      // Nothing tapped to take back.
+      return result(false, false);
+    }
+
+    const label = code ? MANUAL_SCANNED : MANUAL_TAPPED;
+    await this.snapshotRepo.$saveDelta(camera.id, {
+      in: delta,
+      out: 0,
+      byClass: { [label]: { in: delta, out: 0 } }
+    });
+    const after = await this.snapshotRepo.$totalSince(camera.id, since);
+    this.manager.publishTotals(camera.id, after);
+    return result(true, false, after);
+  }
+
+  /** The latest QR codes counted on a manual counter since its reset, newest first. */
+  async manualScans(
+    cameraId: string,
+    limit: number,
+    viewer: CountingViewer
+  ): Promise<M.ManualScan[]> {
+    const camera = await this.camera(cameraId, viewer);
+    const rows = await this.manualScanRepo.$latestSince(
+      camera.id,
+      camera.countsResetAt,
+      Math.min(Math.max(limit, 1), 200)
+    );
+    return rows.map(r => ({ code: r.code, createdAt: r.createdAt }));
   }
 
   async saveRegion(
@@ -209,6 +277,71 @@ export class CountingService {
     }));
   }
 
+  /**
+   * Every source the user sees, counted between from and to (e.g. today in Phnom Penh), and per
+   * hour or day split into cameras and counting by scanning: the Count page compares the two. The
+   * current hour includes what running cameras counted but did not save yet.
+   */
+  async overview(
+    args: I.CountingOverviewArgs,
+    viewer: CountingViewer
+  ): Promise<M.CountingOverview> {
+    const from = new Date(args.from);
+    const to = new Date(args.to);
+    if (!(from < to)) throw new BadRequestException('"from" must be before "to".');
+    if (to.getTime() - from.getTime() > 366 * 24 * 3600e3)
+      throw new BadRequestException('A year at most.');
+    const cameras = await this.cameraRepo.$findVisible(viewer);
+    const ids = cameras.map(c => c.id);
+    const manual = new Set(cameras.filter(c => isManualSource(c.sourceUrl)).map(c => c.id));
+    const [totals, rows] = await Promise.all([
+      this.snapshotRepo.$totalsByCamera(ids, from, to),
+      this.snapshotRepo.$bucketsByCamera(ids, from, to, args.bucket)
+    ]);
+
+    // What running cameras counted since their last save (at most a minute), in this hour.
+    const now = new Date();
+    const current = args.bucket === E.CountBucketEnum.DAY ? dayStart(now) : hourStart(now);
+    if (now >= from && now < to) {
+      for (const id of ids) {
+        const unsaved = this.manager.unsaved(id);
+        if (!unsaved || (!unsaved.in && !unsaved.out)) continue;
+        const total = totals.get(id) ?? { in: 0, out: 0, byClass: {} };
+        total.in += unsaved.in;
+        total.out += unsaved.out;
+        mergeByClass(total.byClass, unsaved.byClass);
+        totals.set(id, total);
+        rows.push({ cameraId: id, periodStart: current, in: unsaved.in, out: unsaved.out });
+      }
+    }
+
+    const buckets = new Map<number, M.CountingOverviewBucket>();
+    for (const row of rows) {
+      const key = row.periodStart.getTime();
+      const b = buckets.get(key) ?? {
+        periodStart: row.periodStart,
+        cameraIn: 0,
+        cameraOut: 0,
+        manualIn: 0
+      };
+      if (manual.has(row.cameraId)) b.manualIn += row.in;
+      else {
+        b.cameraIn += row.in;
+        b.cameraOut += row.out;
+      }
+      buckets.set(key, b);
+    }
+    return {
+      sources: cameras.map(c => {
+        const t = totals.get(c.id) ?? { in: 0, out: 0, byClass: {} };
+        return { cameraId: c.id, in: t.in, out: t.out, byClass: byClassList(t.byClass) };
+      }),
+      buckets: [...buckets.values()].sort(
+        (a, b) => a.periodStart.getTime() - b.periodStart.getTime()
+      )
+    };
+  }
+
   classes(): M.CountingClass[] {
     return classList(this.inference.labels);
   }
@@ -231,6 +364,10 @@ export class CountingService {
     }
   }
 }
+
+/** The counts of a manual counter, by how the parcel was counted (its byClass labels). */
+export const MANUAL_SCANNED = 'scanned';
+export const MANUAL_TAPPED = 'tapped';
 
 /** Midnight in Phnom Penh (UTC+7, no daylight saving). */
 function dayStart(at: Date): Date {

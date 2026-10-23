@@ -7,3 +7,4 @@ export * from './polygon-counter';
 export * from './draw';
 export * from './pipeline';
 export * from './color-detector';
+export * from './ultralytics-api-detector';

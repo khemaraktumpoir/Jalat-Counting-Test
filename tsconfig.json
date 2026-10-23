@@ -21,16 +21,12 @@
     "paths": {
       "@api/*": ["src/api/*"],
       "@common": ["src/common"],
-      "@dynamodb": ["src/dynamodb"],
       "@entities": ["src/entities"],
       "@graphql/*": ["src/graphql/*"],
       "@lib/*": ["src/lib/*"],
-      "@models": ["src/models"],
-      "@queries": ["src/queries"],
-      "@repositories": ["src/repositories"],
-      "@schemas": ["src/schemas"]
+      "@repositories": ["src/repositories"]
     }
   },
-  "include": ["src/**/*", "typings/**/*.ts"],
+  "include": ["src/**/*"],
   "exclude": ["node_modules"]
 }

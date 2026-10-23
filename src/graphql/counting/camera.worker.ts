@@ -3,6 +3,7 @@
  * the API: ffmpeg frames → YOLO26 → tracker → counter. Frames that arrive while the model is busy
  * are dropped (the newest one is taken next), so a slow CPU lowers the effective fps instead of
  * falling behind. A stream that stops is opened again after 2 s, 4 s, 8 s … (at most reconnectMaxMs).
+ * A phone camera ("phone:") has no stream: the warehouse app's JPEGs come as 'frame' messages.
  */
 import { encode as encodeJpeg } from 'jpeg-js';
 import { parentPort, workerData } from 'worker_threads';
@@ -14,6 +15,9 @@ import {
   CountingPipeline,
   Counts,
   DEMO_MODEL,
+  isUltralyticsModel,
+  UltralyticsApiDetector,
+  ultralyticsUrlOf,
   Detector,
   DetectorLike,
   drawInArrow,
@@ -22,7 +26,7 @@ import {
   RegionShape,
   Track
 } from '@lib/counting';
-import { FrameSource, loadOnnxModel } from '@lib/inference';
+import { FrameSource, frameOfJpeg, isPhoneSource, loadOnnxModel } from '@lib/inference';
 
 import type { CameraWorkerData, FromWorker, RunStatus, ToWorker } from './camera-worker.protocol';
 
@@ -164,6 +168,35 @@ function openStream(): void {
   source.start();
 }
 
+// ---- A phone camera: frames while the app's page is open, "waiting" when they stop ----
+const PHONE_WAIT =
+  'Waiting for the phone or PC: open this camera in the warehouse app on the device that films the belt and start filming.';
+const PHONE_SILENT_MS = 10_000;
+let phoneTimer: NodeJS.Timeout | null = null;
+
+function waitForPhone(): void {
+  setStatus('RECONNECTING', PHONE_WAIT);
+}
+
+function onPhoneFrame(jpeg: Uint8Array): void {
+  if (stopped) return;
+  let frame: Frame;
+  try {
+    frame = frameOfJpeg(jpeg, data.width, data.height);
+  } catch (error: any) {
+    setStatus(
+      'RECONNECTING',
+      `The phone sent a picture that can't be read: ${error?.message ?? error}`
+    );
+    return;
+  }
+  if (status !== 'RUNNING') setStatus('RUNNING');
+  if (phoneTimer) clearTimeout(phoneTimer);
+  phoneTimer = setTimeout(waitForPhone, PHONE_SILENT_MS);
+  if (busy) pending = frame;
+  else void processFrame(frame);
+}
+
 parentPort!.on('message', (message: ToWorker) => {
   switch (message.type) {
     case 'update':
@@ -197,9 +230,13 @@ parentPort!.on('message', (message: ToWorker) => {
     case 'preview':
       preview = message.on;
       break;
+    case 'frame':
+      if (isPhoneSource(data.sourceUrl)) onPhoneFrame(message.jpeg);
+      break;
     case 'stop':
       stopped = true;
       if (retryTimer) clearTimeout(retryTimer);
+      if (phoneTimer) clearTimeout(phoneTimer);
       source?.stop();
       process.exit(0);
   }
@@ -209,8 +246,15 @@ parentPort!.on('message', (message: ToWorker) => {
   setStatus('STARTING');
   try {
     if (data.modelPath === DEMO_MODEL) detector = new ColorDetector();
-    else {
-      const model = await loadOnnxModel(data.modelPath, data.provider);
+    else if (isUltralyticsModel(data.modelPath)) {
+      // The model on Ultralytics Platform: one JPEG a frame over HTTPS, no model on this server.
+      detector = new UltralyticsApiDetector({
+        url: ultralyticsUrlOf(data.modelPath),
+        apiKey: data.apiKey ?? '',
+        imgsz: C.MODEL_INPUT_SIZE
+      });
+    } else {
+      const model = await loadOnnxModel(data.modelPath, data.provider, data.threads);
       detector = new Detector(model.infer, C.MODEL_INPUT_SIZE);
     }
     if (data.region) startPipeline(data.region);
@@ -219,5 +263,6 @@ parentPort!.on('message', (message: ToWorker) => {
     // No model: still read the camera (snapshot, preview, region editor), but say why nothing counts.
     notCounting = `Not counting: ${error?.message ?? error}`;
   }
-  openStream();
+  if (isPhoneSource(data.sourceUrl)) waitForPhone();
+  else openStream();
 })();

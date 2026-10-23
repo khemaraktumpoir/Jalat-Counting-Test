@@ -1,7 +1,9 @@
 # Jalat Counting Service
 
 Counts parcels (or any object the model knows) that cross a **line** or enter an **area** on a
-camera — an IP / RTSP camera over a conveyor, or a video file — in real time.
+camera over a conveyor, in real time. The same job as Ultralytics' `ObjectCounter` ("How to Perform
+Real-Time Object Counting with Ultralytics YOLO26": packages on a conveyor belt), built as a Jalat
+service: no Python at runtime, several cameras, live counts for the apps, history.
 
 - **NestJS** like the other Jalat services (GraphQL at `/v1`, TypeORM, the same JWT + Redis
   session check, MQTT), **no Python at runtime**.
@@ -9,21 +11,68 @@ camera — an IP / RTSP camera over a conveyor, or a video file — in real time
   (bundled with `ffmpeg-static`).
 - One **worker thread per camera** (`src/graphql/counting/camera.worker.ts`), so inference never
   blocks the API.
-- The warehouse app (`app.client/warehouse`, Profile → Parcel counting) is the dashboard.
+- The warehouse app (`app.client/warehouse`, the **Count** tab) is the dashboard.
 
 ```
 ffmpeg (rgb24 frames at the camera's fps, scaled to width × height)
   → letterbox 640×640 → YOLO26 ONNX [1, 300, 6] → IoU tracker → line / area counter
-  → counts: MQTT /topic/counting/<cameraId>/count (live) + CountingSnapshots (hourly deltas)
+  → counts: MQTT /topic/counting/<cameraId>/count (live) + CountingSnapshots (deltas every minute)
 ```
+
+## Features
+
+| | Ultralytics `ObjectCounter` (the video) | This service |
+|---|---|---|
+| Region | line (2 points) or polygon (3+), IN / OUT by point order | ✅ line or area, drawn in the app with an IN arrow |
+| Detection | any YOLO model, `conf`, `classes` | ✅ YOLO26 ONNX (NMS-free), confidence and classes per camera |
+| Tracking | `tracktrack` (default), `bytetrack`, `botsort`, `ocsort`, `deepocsort`, `fasttrack` | ✅ IoU tracker (one, see Counting rules) |
+| Counts | IN / OUT | ✅ IN / OUT, and per class |
+| Picture | boxes, labels, region, totals (`show_in`, `show_out`, `line_width`) | ✅ live view (MJPEG) with region, IN arrow and boxes |
+| Sources | video file, camera | ✅ RTSP camera, phone with an IP-camera app, **this phone's camera** (the app sends frames), video file |
+| Output | annotated video file (`cv2.VideoWriter`) | ❌ no recording; ➕ counts saved, hourly / daily history |
+| Run | `yolo solutions count …`, one process | ➕ many cameras (a worker thread each), start / stop / reset, live counts on MQTT, Jalat sign-in and roles |
+
+### Camera sources
+
+| Source | `sourceUrl` | |
+|---|---|---|
+| Network camera | `rtsp://user:pass@192.168.1.20:554/stream1` | read by ffmpeg |
+| Phone + IP-camera app | `http://<phone ip>:8080/video` (IP Webcam), `:4747/video` (DroidCam) | same Wi-Fi as the service |
+| This phone (warehouse app) | `phone:` | the app's "Use this phone's camera" page sends JPEGs to `POST …/frames`; no frame for 10 s → "Waiting for the phone" |
+| Test video | `samples/conveyor-synthetic.mp4` | a path on the service (its folder in Docker) |
+
+## Folders
+
+| | |
+|---|---|
+| `src/api/` | REST: snapshot, live view, phone frames, health, `/` |
+| `src/graphql/counting/` | cameras, regions, history (GraphQL); `camera-manager` + one `camera.worker` thread per camera |
+| `src/graphql/auth`, `user` | the Jalat sign-in (JWT + Redis session) and the user model (as the User Service) |
+| `src/lib/counting/` | the counting core, no Nest: preprocess, detectors (ONNX, colour, Ultralytics API), tracker, line / area counters, drawing |
+| `src/lib/inference/` | ffmpeg frames (camera, file, phone), onnxruntime model loading |
+| `src/lib/{config,typeorm,ioredis,jwt,mqtt}` | the service's plumbing, as in the other Jalat services |
+| `src/common/`, `entities/`, `repositories/` | shared helpers, the tables, their queries |
+| `scripts/` | `db:seed`, `model:inspect`, `model:bench`, `model:try`, `frames:grab` |
+| `models/` | what the service runs: `yolo26n.onnx` (or a parcel model) and its `classes.json` (not committed) |
+| `samples/` | `conveyor-synthetic.mp4`, the test belt |
+| `../Jalat-Ultralytics-Service/` | making a parcel model (next to this service, not in it): `ultralytics/` (repo + Python env), `weights/`, datasets, runs and the scripts — see its `README.md` |
+| `docs/` | `rollout-plan.md`: pilot → data → model → scans → all sites |
+| `.env.example` | every setting (yarn dev and docker compose); copy to `.env` |
+| `deploy/` | everything Docker: `Dockerfile` (+ `Dockerfile.dockerignore`), `docker-compose.yml` (service + optional Caddy / Cloudflare Tunnel / Redis tunnel), `docker-compose.local.yml` (local Postgres and MQTT); `README.md` (servers: steps, sizes, daily commands), `setup-server.sh` |
+| `.github/workflows/`, `.husky/` | CI/CD to the servers and the commit checks, as in the Location Service |
 
 ## Run it locally
 
+`make help` lists the everyday commands (`make up`, `make logs`, `make test`, `make model-try`,
+`make frames`, `make train` …); from the `jalat-apps` folder, `make counting` starts it in Docker.
+
 ```bash
-docker compose up -d          # Postgres :5433, Redis :6380, MQTT :1884 (websockets :9002)
 cp .env.example .env          # set JWT_SECRET; DB_SYNC=true creates the tables
+docker compose up -d --build  # Postgres :5433, MQTT :1884 (websockets :9002) and the service :9096
+                              # (COMPOSE_FILE in .env: deploy/docker-compose.yml + .local.yml); sessions
+                              # from this machine's Redis :6379 (the User Service's)
 yarn install
-yarn build && node dist/main.js   # or: yarn dev
+yarn start                    # build + node dist/main.js   (or: yarn dev, with watch)
 curl localhost:9096/health
 ```
 
@@ -37,23 +86,89 @@ yarn db:seed                  # "Sample conveyor" on samples/conveyor-synthetic.
 
 ## Model
 
-YOLO26 is exported to ONNX once, outside this repo (the only Python step):
+YOLO26 is exported to ONNX once (the only Python step). **`nms=False` is required**: it exports
+YOLO26's end-to-end head, `[1, 300, 6]`; without it Ultralytics exports the raw `[1, 84, 8400]`
+output, which needs NMS and which this service cannot read.
+
+`../Jalat-Ultralytics-Service/ultralytics` (next to this service) is the Ultralytics repo (its own
+git, AGPL-3.0; not part of this service, not in the Docker image) with a ready Python 3.13
+environment, `.venv313` (PyTorch CPU, torchvision, Ultralytics installed from the repo).
+`../Jalat-Ultralytics-Service/weights/` keeps the starting weights (`yolo26n.pt`) and `yolo11n.onnx`
+as a speed baseline. Export with `make export`, or by hand:
 
 ```bash
-pip install ultralytics
-yolo export model=yolo26n.pt format=onnx imgsz=640      # or your own parcel model (best.pt)
+cd ../Jalat-Ultralytics-Service/ultralytics
+.venv313/Scripts/python -c "from ultralytics import YOLO; YOLO('../weights/yolo26n.pt').export(format='onnx', imgsz=640, nms=False)"
+#   → ../Jalat-Ultralytics-Service/weights/yolo26n.onnx: copy it to models/
 ```
 
-Put the file in `models/` (not committed) and check it:
+A parcel model is trained and exported in one step: `../Jalat-Ultralytics-Service/README.md` (`train_parcels.py`).
+
+Without Python, with Docker (the official CPU image; the file lands in `models/`):
+
+```bash
+docker run --rm -v "$PWD/models:/out" -w /out ultralytics/ultralytics:latest-cpu \
+  yolo export model=yolo26n.pt format=onnx imgsz=640 nms=False
+```
+
+`models/` holds only what the service runs (not committed): set `MODEL_PATH=models/yolo26n.onnx`
+and check it:
 
 ```bash
 yarn model:inspect models/yolo26n.onnx
 # expects an NMS-free output [1, 300, 6] = x1, y1, x2, y2, score, class
+yarn model:bench models/yolo26n.onnx ../Jalat-Ultralytics-Service/weights/yolo11n.onnx --runs 100
+# ms per frame on this CPU (mean / p50 / p95, fps), and how much faster the first one is
+yarn model:try models/yolo26n.onnx samples/conveyor-synthetic.mp4
+# the whole pipeline on a video: what it detects, what it counts, ms a frame
 ```
+
+### Which model: YOLO26 vs YOLO11 on CPU
+
+Ultralytics' numbers (COCO, 640 px; CPU = ONNX Runtime, GPU = T4 TensorRT 10):
+
+| Model | mAP 50-95 | CPU ONNX ms | T4 ms | Params M |
+|---|---|---|---|---|
+| YOLO11n | 39.5 | 56.1 | 1.5 | 2.6 |
+| **YOLO26n** | **40.9** | **38.9** | 1.7 | 2.4 |
+| YOLO11s | 47.0 | 90.0 | 2.5 | 9.4 |
+| YOLO26s | 48.6 | 87.2 | 2.5 | 9.5 |
+| YOLO11m | 51.5 | 183.2 | 4.7 | 20.1 |
+| YOLO26m | 53.1 | 220.0 | 4.7 | 20.4 |
+
+- The "~43% faster" (Ultralytics' "YOLO26 vs YOLO11 ONNX Inference Test") is the **nano model on
+  CPU**: 56.1 → 38.9 ms is 44% more frames a second (31% less time a frame). The small model is about
+  the same; m / l / x are **slower** on CPU than YOLO11, though more accurate. On a GPU they are equal.
+- Why: YOLO26 has no NMS step (the boxes come out final, `[1, 300, 6]`) and no DFL head, so the
+  graph is simpler; on a small model on a CPU that is a large part of the time. This service reads
+  that output directly (`src/lib/counting/detector.ts`) — YOLO11's raw `[1, 84, 8400]` is not supported.
+- **Use YOLO26n** (YOLO26s if it misses parcels); parcels on a belt are large, clear objects.
+  Measure on the server's own CPU with `yarn model:bench` and compare with the cameras' fps.
+- **Measured here** (a 12-thread Windows PC, onnxruntime-node 1.18, `yarn model:bench`, 100 runs,
+  two runs): YOLO26n end-to-end **71 ms (14 fps)**, YOLO11n **81–84 ms (12 fps) before its NMS** —
+  14–18 % faster, more with NMS counted. The whole pipeline (`yarn model:try`) was 6 fps on a busy
+  machine. Not the 43 % of the headline, but faster, and the output needs no post-processing.
+- The pretrained `yolo26n` knows the 80 COCO objects (suitcase, handbag…), **not cardboard parcels**.
+  For real counts, fine-tune YOLO26n on frames from the belts (a few hundred labelled images to
+  start), export `best.pt` the same way and set `models/classes.json` to `["parcel"]`.
 
 `models/classes.json` maps class index → label: the 80 COCO labels for `yolo26n`; replace it with
 your own labels for a custom parcel model (`["parcel"]`). `MODEL_PROVIDER=cuda` needs the CUDA build
 of onnxruntime-node.
+
+### `MODEL_PATH` values
+
+| `MODEL_PATH` | Detector | |
+|---|---|---|
+| `models/yolo26n.onnx` (or `models/parcel.onnx`) | `Detector` (onnxruntime, this server's CPU) | the normal way |
+| `demo:orange` | `ColorDetector` | the sample video only: orange boxes by colour, no model |
+| `ultralytics:<url>` + `ULTRALYTICS_API_KEY` | `UltralyticsApiDetector` | the model on Ultralytics Platform: one JPEG a frame over HTTPS |
+
+`ultralytics:` takes a **dedicated endpoint** (`https://….run.app/predict`: no rate limit, paid by
+active time) or the shared one (`https://platform.ultralytics.com/api/models/<owner>/<project>/<model>/predict`:
+20 requests a minute — tests only, far below a camera's fps). Every frame crosses the internet
+(≈100–300 ms, ≈2.5 Mbit/s a camera at 5 fps) and counting stops when it is down; on 429 the camera
+waits the `Retry-After` time. Prefer a local model; use this for a site whose server is too weak.
 
 > **Licence:** Ultralytics YOLO is AGPL-3.0. Check AGPL vs an Enterprise licence before a commercial release.
 
@@ -69,11 +184,22 @@ GraphQL (`/v1`), roles `ADMIN`, `OPERATION`, `MOBILE_WAREHOUSE` (a warehouse see
 | `createCountingCamera`, `updateCountingCamera`, `deleteCountingCamera` | |
 | `startCountingCamera`, `stopCountingCamera`, `resetCountingCamera` | reset saves the counts, then counts from 0 |
 | `saveCountingRegion(cameraId, type: LINE \| POLYGON, points)` | LINE: 2 points; POLYGON: 3+; inside width × height |
+| `addManualCount(input: { cameraId, code?, delta })` | a manual counter (`sourceUrl: "manual:"`, no camera): a scanned QR code counts once since the last reset (`duplicate` otherwise), no code = a tap; `delta: -1` takes one back; saved as `scanned` / `tapped` in the history |
+| `countingManualScans(cameraId, limit)` | a manual counter's latest QR codes since its reset |
+| `countingOverview(from, to, bucket)` | every visible source counted in a time range (e.g. today), and per hour or day: cameras vs counting by scanning (includes running cameras' unsaved counts) |
+| `countingPhotoFolder(path, conf, classes, limit)` | counts the objects in every photo of a folder on the service (inside `PHOTO_ROOTS`, default `photos,samples`), with the cameras' model: per photo and in total, by label |
+| `countingPhotoBatches(from, to)` | batches of counted photos (photos, parcels, copies), newest first |
+| `countingPhotoRecords(batchId, copiesOnly, from, to, limit)` | one batch's photos in the order picked, or the copies, each with the photo it repeats |
+| `countingPhotoRoots` | the folders `countingPhotoFolder` may read |
+| `countingPhotoModel` | what counts photos: `parcels` (the parcel model, default when `models/parcel-world-l.onnx` is there: every parcel, bag or box counts once) or `cameras` (the cameras' model, by label), and its default confidence |
+| `POST /api/v1/counting/photos?name=&conf=&classes=` | REST: one uploaded photo (body `image/jpeg`): its count, by label, and the boxes (fractions of the photo); the warehouse app sends a batch one photo at a time |
 
 REST (token as `Authorization: Bearer …` or `?access_token=`, for `<img>`):
 
 - `GET /api/v1/counting/cameras/:id/snapshot` — one JPEG (the running camera's last frame, or one grabbed)
 - `GET /api/v1/counting/cameras/:id/stream` — MJPEG live view with the region, the IN arrow and the boxes
+- `POST /api/v1/counting/cameras/:id/frames` — a phone camera (`phone:`): one JPEG (`Content-Type:
+  image/jpeg`, up to 3 MB, any size: scaled to the camera's); 409 when the camera is off
 - `GET /health` — database, model, MQTT, enabled cameras
 
 MQTT (retained, published only when the value changes):
@@ -89,8 +215,8 @@ MQTT (retained, published only when the value changes):
 - **Area**: outside → inside is IN, inside → outside is OUT, each at most once per track; a track
   first seen inside is not counted.
 - **Tracker**: greedy IoU matching per class (`iouThreshold` 0.3), a track survives 10 missed frames.
-- **Storage**: counts are saved as deltas every hour, on stop and on reset, so a restart never loses
-  or doubles them; "since reset" = saved since `countsResetAt` + what the running worker counted.
+- **Storage**: counts are saved as deltas every minute (when something was counted), on stop and on
+  reset, so a restart never doubles them and a crash loses at most a minute; "since reset" = saved since `countsResetAt` + what the running worker counted.
 
 ## Tests
 
@@ -101,12 +227,55 @@ yarn test     # the core: preprocessing, parsing, tracker, line and area counter
 
 ## Deploy
 
-`Dockerfile` (Node 20, Debian slim; ffmpeg comes with ffmpeg-static). Mount the model:
-`-v /srv/models:/usr/src/models`. Point `MQTT_*` at the broker the apps listen to, `REDIS_*` at the
-User Service's Redis (sessions) and `JWT_SECRET` at its secret.
+**`deploy/README.md`** has the steps, server sizes and daily commands. In short: `deploy/Dockerfile`
+(Node 20, two stages, ≈ 720 MB, non-root, health check; ffmpeg from ffmpeg-static); mount the model
+at `/usr/src/models`; point `MQTT_*` at the apps' broker, `REDIS_*` at the User Service's Redis
+(sessions) and `JWT_SECRET` at its secret.
+
+- **A cloud server or a PC next to the cameras:** the same `deploy/docker-compose.yml` with optional parts
+  (`COMPOSE_PROFILES`): `https` (Caddy, a free certificate for your domain), `cloudflare` (Cloudflare
+  Tunnel), `redis-tunnel` (Redis over SSH). `deploy/setup-server.sh` prepares a fresh server
+  (Docker, swap, firewall). On a small server set `MODEL_THREADS` (cores ÷ cameras) and
+  `COUNTING_MEM_LIMIT`.
+- **The servers, as the other Jalat services:** `.github/workflows` — a push to `development`,
+  `uat` or `master` builds the image, pushes it to Huawei SWR, reads the settings from Huawei CSMS
+  (`scripts/fetch_csms_secrets.js`) and updates the Docker Swarm service over SSH.
+
+| Workflow | Branch | GitHub secrets / vars |
+|---|---|---|
+| `development.yml` | `development` | as the Location Service's (`IMAGE_NAME`, `REGISTRY`, `REGION`, `SWR_ORG_NAME`, `ACCESS_KEY_ID`, `SECRET_ACCESS_KEY`, `KMS_*`, `HUAWEI_PRIVATE_KEY`, `USERNAME`, `HOSTNAME`, `SWR_LOGIN_KEY`, `DOCKER_SERVICE_NAME`, `DOCKER_NETWORK_NAME`; var `SERVICE_REPLICA`) — with this service's own image, service name and CSMS secret |
+| `uat.yml` | `uat` | the same names with `UAT_` in front (var `UAT_SERVICE_REPLICA`) |
+| `production.yml` | `master` | the same names with `PROD_` in front (var `PROD_SERVICE_REPLICA`) |
+
+The CSMS secret holds the service's settings (`.env` names) plus `PORT_COUNTING` (the published
+port, e.g. 9096) and `MODELS_DIR` (the server folder with the model, e.g. `/srv/counting/models`,
+mounted read-only at `/usr/src/models`). Keep **one replica** per set of cameras: each replica runs
+every enabled camera.
+
+**Commits:** `.husky` runs `lint-staged` (eslint + prettier on the staged files) before a commit and
+commitlint (`.commitlintrc.json`, Angular: `feat(counting): …`) on the message, as the Location
+Service is set up to; `yarn install` turns the hooks on.
 
 ## Not done yet
 
-- A real YOLO26 / parcel model and its benchmark (ms per frame on the server's CPU) — needs the
-  ONNX export.
-- Load test with many cameras; ByteTrack for crowded scenes; several regions per camera; CSV export.
+- A parcel model: YOLO26n fine-tuned on frames from the belts (the pretrained one knows COCO
+  objects, not parcels), and its `yarn model:bench` numbers on the server's CPU.
+- Recording an annotated video (the Ultralytics example writes one); a choice of trackers
+  (ByteTrack / BoT-SORT for crowded belts); several regions per camera; CSV export.
+- Load test with many cameras.
+
+## Counting parcels in photos
+
+Photo counts (Count photos in the warehouse app, `POST /api/v1/counting/photos`, `countingPhotoFolder`) use the **parcel model** when `models/parcel-world-l.onnx` is there: YOLO-World told "parcel, plastic mailer bag, shopping bag, gift bag, cardboard box, package wrapped in plastic", so it finds parcels of any shape in a driver's pickup photos with no training. Overlapping boxes of one parcel and boxes over the floor are dropped, and every box is a "parcel". Make it once with `make export-photo` (about 190 MB; downloads the weights the first time). Without it, photos are counted with the cameras' model.
+
+| Setting | Default | |
+|---|---|---|
+| `PHOTO_MODEL_PATH` | `models/parcel-world-l.onnx` | another parcel model |
+| `PHOTO_MODEL_SIZE` | `1280` | its input size (the export's `imgsz`) |
+| `PHOTO_CONF` | `0.06` | its confidence when the app sends none (parcels wrapped in paper score about 0.06) |
+
+**Duplicates.** Each photo's result has `skipped` (boxes the model gave but that were not counted: `duplicate` = the same parcel boxed twice, `floor` = a box over most of the photo, `weak` = a weak guess lying on a surer parcel) and a `fingerprint` (a 256-bit difference hash). Photos within 40 bits show the same scene: a folder count marks the later one `copyOf` and leaves it out of the total (`copies`); the app does the same for uploaded photos. Measured on the pickup photos: a copy marked with an X is 16 bits from its original, the same photo sent twice 0, other photos 115–142.
+
+**Records.** A photo uploaded with `batch=<uuid>&seq=<n>` (the app does) and every folder count are saved in `CountingPhotoRecords` (who counted, batch, place, name, count, fingerprint, `copyOfId`). A new photo is compared with the records of the last `PHOTO_DUP_DAYS` days (default 7; 0 = this batch only) that the same account sees (a warehouse: its own): a copy gets `copyOfRecord` (the earlier photo, its batch and time) and is left out of totals. In one batch the photo picked first stays the original, whichever upload finished first. `countingPhotoBatches(from, to)` and `countingPhotoRecords(batchId | copiesOnly, from, to)` list them (the app's Photo records page). With `DB_SYNC=true` the table is created on start; elsewhere create it before deploying.
+
+About 4–5 s a photo on a laptop CPU. Checked on a driver's pickup photos (21 Oct 2026): 3, 4, 5, 5 and 5 whole parcels found as counted by eye, including a parcel wrapped in white paper with no sticker; a parcel cut off at the photo's edge may or may not count.

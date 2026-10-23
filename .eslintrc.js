@@ -46,6 +46,6 @@ module.exports = {
 
   },
   settings: {
-    'import/internal-regex': '^@api|@common|@dynamodb|@entities|@graphql|@lib|@models|@queries|@repositories|@schemas|@x/'
+    'import/internal-regex': '^@api|@common|@entities|@graphql|@lib|@repositories'
   }
 };

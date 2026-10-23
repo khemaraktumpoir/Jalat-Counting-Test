@@ -6,6 +6,7 @@ import { CameraManagerService } from './camera-manager.service';
 import { CountingResolver } from './counting.resolver';
 import { CountingService } from './counting.service';
 import { InferenceService } from './inference.service';
+import { PhotoCountService } from './photo-count.service';
 
 @Module({
   providers: [
@@ -13,8 +14,9 @@ import { InferenceService } from './inference.service';
     InferenceService,
     CameraManagerService,
     CountingService,
+    PhotoCountService,
     CountingResolver
   ],
-  exports: [InferenceService, CameraManagerService, CountingService]
+  exports: [InferenceService, CameraManagerService, CountingService, PhotoCountService]
 })
 export class CountingModule {}

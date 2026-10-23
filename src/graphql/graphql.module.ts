@@ -1,6 +1,7 @@
 import { ApolloDriver, ApolloDriverConfig } from '@nestjs/apollo';
 import { Module } from '@nestjs/common';
 import { GraphQLModule } from '@nestjs/graphql';
+import { existsSync } from 'fs';
 import { GraphQLFormattedError } from 'graphql';
 import { join } from 'path';
 
@@ -38,7 +39,11 @@ export function formatGraphQLError(formattedError: GraphQLFormattedError): Graph
           sortSchema: false,
           playground: config.env.NODE_ENV == 'development',
           driver: ApolloDriver,
-          autoSchemaFile: join(process.cwd(), 'src/schema.gql'),
+          // From the source tree (yarn dev / start): keep src/schema.gql up to date. In the image
+          // there is no src/ (and the "node" user may not create it): the schema stays in memory.
+          autoSchemaFile: existsSync(join(process.cwd(), 'src'))
+            ? join(process.cwd(), 'src/schema.gql')
+            : true,
           context: ({ req }) => ({ req }),
           formatError: formatGraphQLError
         };

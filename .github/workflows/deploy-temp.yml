@@ -1,0 +1,168 @@
+name: Deploy Application
+# As the Location Service's: the settings come from Huawei CSMS (scripts/fetch_csms_secrets.js →
+# $GITHUB_ENV), then the Docker Swarm service is updated (or created) over SSH. The counting
+# service also needs its model on the server: MODELS_DIR (e.g. /srv/counting/models, holding
+# yolo26n.onnx or parcel.onnx and its classes.json) is mounted read-only at /usr/src/models.
+on:
+  workflow_call:
+    inputs:
+      npm_dependency:
+        required: true
+        type: string
+      script_csms_path:
+        required: true
+        type: string
+      service_replica:
+        required: true
+        type: string
+        default: '1'
+    secrets:
+      hw_access_key:
+        required: true
+      hw_secret_access_key:
+        required: true
+      hw_kms_endpoint:
+        required: true
+      hw_project_id:
+        required: true
+      hw_kms_secret_name:
+        required: true
+      hw_kms_version_id:
+        required: true
+      private_key:
+        required: true
+      username:
+        required: true
+      hostname:
+        required: true
+      access_key_id:
+        required: true
+      swr_login_key:
+        required: true
+      swr_org_name:
+        required: true
+      region:
+        required: true
+      docker_service_name:
+        required: true
+      docker_network_name:
+        required: true
+      registry:
+        required: true
+      image_name:
+        required: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v2
+        with:
+          node-version: '18'
+
+      - name: Fetch Secrets from Huawei CSMS
+        id: fetch-secrets
+        run: |
+          npm i ${{ inputs.npm_dependency }} --legacy-peer-deps
+          node ${{ inputs.script_csms_path }}
+        env:
+          HW_ACCESS_KEY: ${{ secrets.hw_access_key }}
+          HW_SECRET_ACCESS_KEY: ${{ secrets.hw_secret_access_key }}
+          HW_KMS_ENDPOINT: ${{ secrets.hw_kms_endpoint }}
+          HW_PROJECT_ID: ${{ secrets.hw_project_id }}
+          HW_KMS_SECRET_NAME: ${{ secrets.hw_kms_secret_name }}
+          HW_KMS_VERSION_ID: ${{ secrets.hw_kms_version_id }}
+
+      - name: SSH & Deploy containerized app with Docker Swarm
+        env:
+          PRIVATE_KEY: ${{ secrets.private_key }}
+          HOSTNAME: ${{ secrets.hostname }}
+          USERNAME: ${{ secrets.username }}
+        run: |
+          echo "$PRIVATE_KEY" > private_key && chmod 600 private_key
+          ssh -o StrictHostKeyChecking=no -i private_key ${{ secrets.username }}@${{ secrets.hostname }} '
+            docker login -u ap-southeast-3@${{ secrets.access_key_id }} -p ${{ secrets.swr_login_key }} swr.ap-southeast-3.myhuaweicloud.com
+            mkdir -p "${{ env.MODELS_DIR }}"
+            if docker service ls | grep -q '${{ secrets.docker_service_name }}'; then
+              echo "Service already exist, Updating..."
+              docker service update \
+                --force \
+                --replicas ${{ inputs.service_replica }} \
+                --env-add NODE_ENV="${{ env.NODE_ENV }}" \
+                --env-add PORT=${{ env.PORT_COUNTING }} \
+                --env-add JWT_SECRET="${{ env.JWT_SECRET }}" \
+                --env-add DB_HOST="${{ env.DB_HOST }}" \
+                --env-add DB_PORT=${{ env.DB_PORT }} \
+                --env-add DB_SCHEMA="${{ env.DB_SCHEMA }}" \
+                --env-add DB_USERNAME="${{ env.DB_USERNAME }}" \
+                --env-add DB_PASSWORD="${{ env.DB_PASSWORD }}" \
+                --env-add DB_CONNECTION=${{ env.DB_CONNECTION }} \
+                --env-add DB_LOGGING=${{ env.DB_LOGGING }} \
+                --env-add DB_SYNC=${{ env.DB_SYNC }} \
+                --env-add REDIS_HOST="${{ env.REDIS_HOST }}" \
+                --env-add REDIS_PORT=${{ env.REDIS_PORT }} \
+                --env-add REDIS_AUTH_PASS="${{ env.REDIS_AUTH_PASS }}" \
+                --env-add MQTT_HOST="${{ env.MQTT_HOST }}" \
+                --env-add MQTT_PORT=${{ env.MQTT_PORT }} \
+                --env-add MQTT_USER="${{ env.MQTT_USER }}" \
+                --env-add MQTT_PASS="${{ env.MQTT_PASS }}" \
+                --env-add MODEL_PATH="${{ env.MODEL_PATH }}" \
+                --env-add MODEL_CLASSES_PATH="${{ env.MODEL_CLASSES_PATH }}" \
+                --env-add MODEL_PROVIDER="${{ env.MODEL_PROVIDER }}" \
+                --env-add ULTRALYTICS_API_KEY="${{ env.ULTRALYTICS_API_KEY }}" \
+                --env-add DEFAULT_FPS=${{ env.DEFAULT_FPS }} \
+                --env-add DEFAULT_CONF=${{ env.DEFAULT_CONF }} \
+                --mount-rm /usr/src/models \
+                --mount-add type=bind,source=${{ env.MODELS_DIR }},target=/usr/src/models,readonly \
+                --with-registry-auth \
+                --image ${{ secrets.registry }}/${{ secrets.swr_org_name }}/${{ secrets.image_name }}:latest \
+                ${{ secrets.docker_service_name }}
+            else
+              echo "Creating new service..."
+              docker service create \
+                --name ${{ secrets.docker_service_name }} \
+                --network ${{ secrets.docker_network_name }} \
+                --replicas ${{ inputs.service_replica }} \
+                --publish ${{ env.PORT_COUNTING }}:${{ env.PORT_COUNTING }} \
+                --env NODE_ENV="${{ env.NODE_ENV }}" \
+                --env PORT=${{ env.PORT_COUNTING }} \
+                --env JWT_SECRET="${{ env.JWT_SECRET }}" \
+                --env DB_HOST="${{ env.DB_HOST }}" \
+                --env DB_PORT=${{ env.DB_PORT }} \
+                --env DB_SCHEMA="${{ env.DB_SCHEMA }}" \
+                --env DB_USERNAME="${{ env.DB_USERNAME }}" \
+                --env DB_PASSWORD="${{ env.DB_PASSWORD }}" \
+                --env DB_CONNECTION=${{ env.DB_CONNECTION }} \
+                --env DB_LOGGING=${{ env.DB_LOGGING }} \
+                --env DB_SYNC=${{ env.DB_SYNC }} \
+                --env REDIS_HOST="${{ env.REDIS_HOST }}" \
+                --env REDIS_PORT=${{ env.REDIS_PORT }} \
+                --env REDIS_AUTH_PASS="${{ env.REDIS_AUTH_PASS }}" \
+                --env MQTT_HOST="${{ env.MQTT_HOST }}" \
+                --env MQTT_PORT=${{ env.MQTT_PORT }} \
+                --env MQTT_USER="${{ env.MQTT_USER }}" \
+                --env MQTT_PASS="${{ env.MQTT_PASS }}" \
+                --env MODEL_PATH="${{ env.MODEL_PATH }}" \
+                --env MODEL_CLASSES_PATH="${{ env.MODEL_CLASSES_PATH }}" \
+                --env MODEL_PROVIDER="${{ env.MODEL_PROVIDER }}" \
+                --env ULTRALYTICS_API_KEY="${{ env.ULTRALYTICS_API_KEY }}" \
+                --env DEFAULT_FPS=${{ env.DEFAULT_FPS }} \
+                --env DEFAULT_CONF=${{ env.DEFAULT_CONF }} \
+                --mount type=bind,source=${{ env.MODELS_DIR }},target=/usr/src/models,readonly \
+                --with-registry-auth \
+                ${{ secrets.registry }}/${{ secrets.swr_org_name }}/${{ secrets.image_name }}:latest
+            fi '
+
+      - name: Remove unused docker images
+        run: |
+          ssh -o StrictHostKeyChecking=no -i private_key ${{ secrets.username }}@${{ secrets.hostname }} '
+            # Get all images, sort by creation date in descending order, and get all but the first entry
+                images_to_remove=$(docker images "${{ secrets.registry }}/${{ secrets.swr_org_name }}/${{ secrets.image_name }}" --format "{{.CreatedAt}}\t{{.ID}}" | sort -r | tail -n +2 | cut -f2)
+                # Loop through and remove each image
+                echo "$images_to_remove" | while read image_id; do
+                  docker rmi "$image_id" || true
+                done '

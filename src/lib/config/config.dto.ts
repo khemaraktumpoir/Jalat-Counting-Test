@@ -29,6 +29,22 @@ export class ConfigDto {
   @IsString()
   MODEL_PROVIDER?: string;
 
+  /**
+   * CPU threads one camera's model may use (0 or unset: all cores). On a small server: cores ÷
+   * cameras, e.g. 1 on 1 vCPU, 2 on 4 vCPU with 2 cameras.
+   */
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Max(64)
+  @Transform(x => +x.value)
+  MODEL_THREADS?: number;
+
+  /** MODEL_PATH=ultralytics:<endpoint url>: the Ultralytics Platform API key. */
+  @IsOptional()
+  @IsString()
+  ULTRALYTICS_API_KEY?: string;
+
   /** Frames a second read from a camera that has none of its own. */
   @IsOptional()
   @IsNumber()
@@ -44,6 +60,46 @@ export class ConfigDto {
   @Max(1)
   @Transform(x => +x.value)
   DEFAULT_CONF?: number;
+
+  /**
+   * Folders a photo-folder count may read, comma separated, relative to the service's folder or
+   * absolute; unset = photos,samples. Nothing outside them can be read.
+   */
+  @IsOptional()
+  @IsString()
+  PHOTO_ROOTS?: string;
+
+  /**
+   * The parcel model for photo counts (an open-vocabulary YOLO-World export, see README); unset =
+   * models/parcel-world-l.onnx when it is there, else the cameras' MODEL_PATH.
+   */
+  @IsOptional()
+  @IsString()
+  PHOTO_MODEL_PATH?: string;
+
+  /** Its input size in pixels (the export's imgsz); 1280 by default. */
+  @IsOptional()
+  @IsNumber()
+  @Min(320)
+  @Max(2048)
+  @Transform(x => +x.value)
+  PHOTO_MODEL_SIZE?: number;
+
+  /** Its default confidence (0–1) when the app sends none; 0.06 by default (parcels wrapped in paper score low). */
+  @IsOptional()
+  @IsNumber()
+  @Min(0.01)
+  @Max(0.95)
+  @Transform(x => +x.value)
+  PHOTO_CONF?: number;
+
+  /** How many days back a counted photo is compared with earlier ones for copies; 7 by default. */
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Max(365)
+  @Transform(x => +x.value)
+  PHOTO_DUP_DAYS?: number;
 
   /** ffmpeg to read the cameras with; unset = the one bundled by ffmpeg-static. */
   @IsOptional()

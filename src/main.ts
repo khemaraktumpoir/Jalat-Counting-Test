@@ -14,9 +14,6 @@ import { ConfigModule, ConfigService } from '@lib/config';
 
 import { ApplicationModule } from './app.module';
 
-// Use this instead `AuthGuard` if you are using `auth0`
-// import { Auth0Guard } from './api/auth/auth0.guard';
-
 declare const module: any;
 
 async function bootstrap() {
@@ -42,9 +39,14 @@ async function bootstrap() {
   app.enableCors({ origin: true });
   app.useStaticAssets(resolve('.', 'public'));
   app.use(express.json({ limit: '5mb' }));
+  // A phone camera's frames (POST /api/v1/counting/cameras/:id/frames): one JPEG each.
+  app.use(express.raw({ type: 'image/jpeg', limit: '3mb' }));
   app.use(compression());
   app.use(helmet({ contentSecurityPolicy: { reportOnly: true } }));
-  app.use(morgan('dev'));
+  // Not one log line per phone frame (several a second).
+  app.use(
+    morgan('dev', { skip: req => req.method === 'POST' && /\/frames(\?|$)/.test(req.url ?? '') })
+  );
 
   // =================================
   // configureNestGlobals

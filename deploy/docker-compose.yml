@@ -1,0 +1,103 @@
+# The counting service on one machine — your PC, a cloud server (VPS) or a PC next to the
+# cameras — with the Jalat database, Redis and MQTT it shares with the other services.
+# Run from the repo root (the settings are the root .env, as for yarn dev):
+#
+#   cp .env.example .env                  # fill it in (never commit .env)
+#   docker compose up -d --build          # COMPOSE_FILE in .env points here; then:
+#                                         # curl localhost:9096/health
+#
+# Local development adds a Postgres and an MQTT broker (deploy/docker-compose.local.yml), also via
+# COMPOSE_FILE (see .env.example). Servers: deploy/README.md. Paths below are relative to deploy/.
+#
+# Parts switched on with COMPOSE_PROFILES in .env (comma-separated):
+#   counting      always: the service (the model mounted read-only from MODELS_DIR)
+#   redis-tunnel  "redis-tunnel": the server's Redis over SSH, when it only listens on the server
+#   caddy         "https": HTTPS with a free certificate for DOMAIN (a VPS with a domain)
+#   cloudflared   "cloudflare": Cloudflare Tunnel, HTTPS without an open port (a PC on site)
+
+# A fixed project name: the same containers and volumes whichever folder it is run from.
+name: jalat-counting-service
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: '10m'
+    max-file: '3'
+
+services:
+  counting:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: ${COUNTING_IMAGE:-jalat-counting-service}
+    restart: unless-stopped
+    init: true
+    env_file: ../.env
+    environment:
+      # The Redis tunnel's name when that profile is on; otherwise REDIS_HOST from .env.
+      REDIS_HOST: ${REDIS_HOST:-redis-tunnel}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+    volumes:
+      - ${MODELS_DIR:-../models}:/usr/src/models:ro
+      # Photos to count by folder (countingPhotoFolder), read only.
+      - ${PHOTOS_DIR:-../photos}:/usr/src/photos:ro
+    # This machine only (curl http://localhost:9096/health); the world reaches it through Caddy or
+    # the Cloudflare Tunnel. Set COUNTING_BIND=0.0.0.0 to open it (then firewall it).
+    ports:
+      - '${COUNTING_BIND:-127.0.0.1}:${PORT:-9096}:${PORT:-9096}'
+    # A small server: keep room for the system and the database (2 GB VPS: 1500m, 1 vCPU: 1.0).
+    mem_limit: ${COUNTING_MEM_LIMIT:-1500m}
+    cpus: ${COUNTING_CPUS:-0}
+    logging: *logging
+    depends_on:
+      redis-tunnel:
+        condition: service_started
+        required: false
+
+  redis-tunnel:
+    profiles: ['redis-tunnel']
+    image: alpine:3.20
+    restart: unless-stopped
+    command: >
+      sh -c "apk add --no-cache autossh openssh-client >/dev/null &&
+      autossh -M 0 -N -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes
+      -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/root/known_hosts
+      -i /run/secrets/ssh_key -p $${SSH_PORT:-22} -L 0.0.0.0:6379:127.0.0.1:6379 $${SSH_TARGET}"
+    environment:
+      SSH_TARGET: ${SSH_TARGET:-}
+      SSH_PORT: ${SSH_PORT:-22}
+    volumes:
+      - ${SSH_KEY_FILE:-./ssh_key}:/run/secrets/ssh_key:ro
+    logging: *logging
+
+  caddy:
+    profiles: ['https']
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    # Gets and renews a Let's Encrypt certificate for DOMAIN by itself (its DNS must point here,
+    # ports 80 and 443 open).
+    command: caddy reverse-proxy --from ${DOMAIN:-localhost} --to counting:${PORT:-9096}
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - counting
+    logging: *logging
+
+  cloudflared:
+    profiles: ['cloudflare']
+    image: cloudflare/cloudflared:2024.10.1
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:-}
+    depends_on:
+      - counting
+    logging: *logging
+
+volumes:
+  caddy-data:
+  caddy-config:
