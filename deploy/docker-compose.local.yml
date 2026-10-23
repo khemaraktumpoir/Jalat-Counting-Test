@@ -6,8 +6,11 @@
 # so the service reads the Redis the local User Service writes to (this machine's :6379), and its
 # JWT_SECRET in .env must be the User Service's.
 services:
+  # restart as the service does, or after a Docker / PC restart only the service comes back and
+  # waits for a database that is not there ("getaddrinfo EAI_AGAIN postgres").
   postgres:
     image: postgres:15-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_USER: jalat
       POSTGRES_PASSWORD: jalat
@@ -19,6 +22,7 @@ services:
 
   mosquitto:
     image: eclipse-mosquitto:2
+    restart: unless-stopped
     command: sh -c "printf 'listener 1883\nallow_anonymous true\nlistener 9001\nprotocol websockets\n' > /tmp/m.conf && mosquitto -c /tmp/m.conf"
     ports:
       - '1884:1883'

@@ -6,4 +6,6 @@ export interface JWTPayload {
   userType: string;
   status: string;
   fullName: string;
+  /** The User Service's role (Roles.id), if the account has one. */
+  roleId?: number | null;
 }

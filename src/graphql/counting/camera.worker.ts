@@ -2,7 +2,8 @@
  * One camera, in its own worker thread (CameraManagerService starts it), so inference never blocks
  * the API: ffmpeg frames → YOLO26 → tracker → counter. Frames that arrive while the model is busy
  * are dropped (the newest one is taken next), so a slow CPU lowers the effective fps instead of
- * falling behind. A stream that stops is opened again after 2 s, 4 s, 8 s … (at most reconnectMaxMs).
+ * falling behind. A stream that stops is opened again after 2 s, 4 s, 8 s … (at most reconnectMaxMs);
+ * a video file that ends without `loop` is not: the camera stops there ('ended').
  * A phone camera ("phone:") has no stream: the warehouse app's JPEGs come as 'frame' messages.
  */
 import { encode as encodeJpeg } from 'jpeg-js';
@@ -26,7 +27,7 @@ import {
   RegionShape,
   Track
 } from '@lib/counting';
-import { FrameSource, frameOfJpeg, isPhoneSource, loadOnnxModel } from '@lib/inference';
+import { FrameSource, frameOfJpeg, isPhoneSource, isStream, loadOnnxModel } from '@lib/inference';
 
 import type { CameraWorkerData, FromWorker, RunStatus, ToWorker } from './camera-worker.protocol';
 
@@ -159,6 +160,8 @@ function openStream(): void {
   source.on('end', ({ error }: { error?: string }) => {
     source = null;
     if (stopped) return;
+    // A video file played to its end with "Play the video again" off: done, not a lost camera.
+    if (!error && !data.loop && !isStream(data.sourceUrl)) return void finishVideo();
     // ffmpeg's last line says why ("Connection refused", "404 Not Found", "Error number -138"…).
     const why = error?.split('\n').pop()?.trim();
     setStatus('RECONNECTING', why ? `Can't reach the camera: ${why}` : 'The stream ended.');
@@ -166,6 +169,15 @@ function openStream(): void {
     retryMs = Math.min(retryMs * 2, data.reconnectMaxMs);
   });
   source.start();
+}
+
+/** Counts the frames still in hand, then tells the manager the video is over (it stops the camera). */
+function finishVideo(): void {
+  if (busy || pending) {
+    setTimeout(finishVideo, 50);
+    return;
+  }
+  post({ type: 'ended' });
 }
 
 // ---- A phone camera: frames while the app's page is open, "waiting" when they stop ----

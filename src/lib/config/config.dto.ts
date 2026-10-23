@@ -71,7 +71,7 @@ export class ConfigDto {
 
   /**
    * The parcel model for photo counts (an open-vocabulary YOLO-World export, see README); unset =
-   * models/parcel-world-l.onnx when it is there, else the cameras' MODEL_PATH.
+   * models/parcel-world-m.onnx (else parcel-world-l.onnx) when it is there, else the cameras' MODEL_PATH.
    */
   @IsOptional()
   @IsString()
@@ -84,6 +84,16 @@ export class ConfigDto {
   @Max(2048)
   @Transform(x => +x.value)
   PHOTO_MODEL_SIZE?: number;
+
+  /**
+   * The parcel look-alike model for Count photos (CLIP's image encoder, see
+   * Jalat-Ultralytics-Service/export_parcel_embedder.py): with it, each counted parcel comes with
+   * an embedding, and the app suggests parcels already in another photo. Unset =
+   * models/parcel-embed.onnx when it is there; "off" = none.
+   */
+  @IsOptional()
+  @IsString()
+  PHOTO_EMBED_PATH?: string;
 
   /** Its default confidence (0–1) when the app sends none; 0.06 by default (parcels wrapped in paper score low). */
   @IsOptional()

@@ -14,7 +14,7 @@ import {
 } from '@nestjs/common';
 import { Request, Response } from 'express';
 
-import { Auth, RestExceptionFilter } from '@common';
+import { Auth, C, Permission, RestExceptionFilter } from '@common';
 import { CameraManagerService, CountingService } from '@graphql/counting';
 import { isPhoneSource } from '@lib/inference';
 
@@ -35,6 +35,7 @@ export class CountingController {
   ) {}
 
   @Auth('ADMIN', 'OPERATION', 'MOBILE_WAREHOUSE')
+  @Permission(C.COUNTING_PERMISSIONS.READ)
   @Get(':id/snapshot')
   async snapshot(
     @Param('id', ParseUUIDPipe) id: string,
@@ -47,6 +48,7 @@ export class CountingController {
   }
 
   @Auth('ADMIN', 'OPERATION', 'MOBILE_WAREHOUSE')
+  @Permission(C.COUNTING_PERMISSIONS.READ)
   @Get(':id/stream')
   async stream(
     @Param('id', ParseUUIDPipe) id: string,
@@ -73,6 +75,7 @@ export class CountingController {
   }
 
   @Auth('ADMIN', 'OPERATION', 'MOBILE_WAREHOUSE')
+  @Permission(C.COUNTING_PERMISSIONS.CONTROL)
   @Post(':id/frames')
   @HttpCode(204)
   async frame(@Param('id', ParseUUIDPipe) id: string, @Req() req: Request): Promise<void> {

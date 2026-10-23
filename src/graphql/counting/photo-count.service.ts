@@ -1,6 +1,8 @@
 import {
   BadRequestException,
   Injectable,
+  OnApplicationBootstrap,
+  Logger,
   NotFoundException,
   ServiceUnavailableException
 } from '@nestjs/common';
@@ -18,14 +20,17 @@ import {
   Detection,
   Detector,
   DetectorLike,
+  Frame,
   isUltralyticsModel,
   UltralyticsApiDetector,
   ultralyticsUrlOf
 } from '@lib/counting';
 import {
   COPY_BITS,
+  Embedder,
   fingerprintDistance,
   imageFileToJpeg,
+  loadEmbedder,
   loadOnnxModel,
   PHOTO_FILE,
   photoFingerprint,
@@ -33,6 +38,7 @@ import {
 } from '@lib/inference';
 import { CountingPhotoRecordRepository } from '@repositories';
 
+import * as I from './counting.input';
 import { InferenceService } from './inference.service';
 
 export interface PhotoCountOptions {
@@ -54,6 +60,11 @@ export interface PhotoCountResult {
   skipped: (PhotoBoxResult & { reason: SkipReason })[];
   /** The photo's fingerprint (photoFingerprint): the same scene twice has nearly the same one. */
   fingerprint: string | null;
+  /**
+   * One per box (same order): the parcel's look (512 numbers, length 1), when the look-alike model
+   * is there; the app compares them across the batch's photos to suggest repeated parcels.
+   */
+  embeddings: number[][] | null;
   /** In a folder count: the earlier photo this one is a copy of (not counted again); else null. */
   copyOf: string | null;
   /** The saved record of this photo (when counted in a batch); null when not saved. */
@@ -76,6 +87,8 @@ export interface PhotoSave {
   viewer: CountingViewer;
   batchId: string;
   seq: number;
+  /** The batch's name, if the app gave one. */
+  note?: string | null;
 }
 
 export interface PhotoBoxResult {
@@ -118,8 +131,17 @@ interface PhotoModel extends PhotoModelInfo {
   labelOf: (classId: number) => string;
 }
 
+/** The parcel look-alike model looked for when PHOTO_EMBED_PATH is not set. */
+export const DEFAULT_EMBED_MODEL = 'models/parcel-embed.onnx';
+
 /** The parcel model looked for when PHOTO_MODEL_PATH is not set (in the service's folder). */
-export const DEFAULT_PHOTO_MODEL = 'models/parcel-world-l.onnx';
+export const DEFAULT_PHOTO_MODEL = 'models/parcel-world-m.onnx';
+/**
+ * The models looked for in turn when PHOTO_MODEL_PATH is not set: YOLO-World medium (the default
+ * since 23 Oct 2026: the same counts as large on the pickup photos, 1.75× faster on a CPU, 112 MB),
+ * then large (186 MB), on a server that still has only that one.
+ */
+const DEFAULT_PHOTO_MODELS = [DEFAULT_PHOTO_MODEL, 'models/parcel-world-l.onnx'];
 
 /** Below this score a box is a weak guess: kept only when it isn't lying on a surer parcel. */
 export const WEAK_PARCEL = 0.1;
@@ -165,7 +187,7 @@ export const PHOTO_FOLDER_MAX = 500;
 
 /**
  * Counting the objects in still photos. By default the parcel model (PHOTO_MODEL_PATH, else
- * models/parcel-world-l.onnx: YOLO-World told "parcel, mailer bag, shopping bag, gift bag, box"),
+ * models/parcel-world-m.onnx: YOLO-World told "parcel, mailer bag, shopping bag, gift bag, box"),
  * which finds parcels of any shape in a driver's pickup photos with no training; its boxes are
  * tidied (tidyParcels) and all called "parcel". Without that file, the cameras' detector
  * (MODEL_PATH: the ONNX model, the Ultralytics endpoint, or the demo colour detector), by label. No tracking and no line: every object seen counts once. The
@@ -173,8 +195,10 @@ export const PHOTO_FOLDER_MAX = 500;
  * on this machine, inside PHOTO_ROOTS. One photo at a time, so a batch never starves the cameras.
  */
 @Injectable()
-export class PhotoCountService {
+export class PhotoCountService implements OnApplicationBootstrap {
   private model: Promise<PhotoModel> | null = null;
+  private embedder: Promise<Embedder | null> | null = null;
+  private readonly logger = new Logger('PhotoCount');
   private queue: Promise<unknown> = Promise.resolve();
 
   constructor(
@@ -183,6 +207,32 @@ export class PhotoCountService {
     /** Optional so the photo counting core is tested without a database. */
     private readonly records?: CountingPhotoRecordRepository
   ) {}
+
+  /**
+   * Loads the photo models and runs each once in the background when the service starts: the first
+   * run of an ONNX model is several seconds slower (loading, graph optimisation), and the first photo
+   * of the day should not pay for it.
+   */
+  onApplicationBootstrap(): void {
+    setTimeout(() => void this.warmUp(), 0);
+  }
+
+  private warmUp(): Promise<void> {
+    return this.oneAtATime(async () => {
+      const t = Date.now();
+      try {
+        const model = await this.getModel();
+        const frame: Frame = { data: new Uint8Array(64 * 64 * 3), width: 64, height: 64 };
+        await model.detector.detect(frame, { conf: model.conf, classes: [] });
+        await this.embeddingsOf(frame, [
+          { box: { x1: 8, y1: 8, x2: 56, y2: 56 }, score: 1, classId: 0 }
+        ]);
+        this.logger.log(`Photo models ready (${model.name}) in ${Date.now() - t} ms`);
+      } catch (error: any) {
+        this.logger.warn(`Photo models not warmed up: ${error?.message ?? error}`);
+      }
+    });
+  }
 
   /** The folders a folder count may read, as absolute paths. */
   roots(): string[] {
@@ -248,7 +298,8 @@ export class PhotoCountService {
       }
       const result: PhotoCountResult = {
         ...this.result(name, frame.width, frame.height, detections, model.labelOf, skipped),
-        fingerprint: photoFingerprint(frame)
+        fingerprint: photoFingerprint(frame),
+        embeddings: await this.embeddingsOf(frame, detections)
       };
       // Saved in the same turn, so two photos of one batch never miss each other.
       if (save && this.records) Object.assign(result, await this.saveRecord(result, save));
@@ -264,9 +315,16 @@ export class PhotoCountService {
    */
   private async saveRecord(
     result: PhotoCountResult,
-    { viewer, batchId, seq }: PhotoSave
+    { viewer, batchId, seq, note }: PhotoSave
   ): Promise<Pick<PhotoCountResult, 'recordId' | 'copyOfRecord'>> {
     const records = this.records!;
+    // The same photo counted again (Retry, or an answer lost on the way): it replaces its record.
+    const again = await records.findOne({ where: { batchId, seq, ownerId: viewer.id } });
+    if (again) {
+      await records.update({ copyOfId: again.id }, { copyOfId: null });
+      await records.update({ repeatsOfId: again.id }, { repeatsOfId: null, repeats: 0 });
+      await records.delete(again.id);
+    }
     const days = this.config.env.PHOTO_DUP_DAYS ?? 7;
     const since = new Date(Date.now() - Math.max(days, 1) * 86_400_000);
     const earlier = (await records.$recentFingerprints(viewer, since)).filter(
@@ -285,6 +343,7 @@ export class PhotoCountService {
         count: result.count,
         byClass: result.byClass,
         copyOfId: original?.id ?? null,
+        batchNote: note?.trim() || null,
         ownerId: viewer.id,
         ownerType: viewer.userType ?? null
       })
@@ -306,8 +365,24 @@ export class PhotoCountService {
   }
 
   /** The viewer's batches of counted photos between from and to, newest first. */
-  batches(viewer: CountingViewer, from: Date, to: Date) {
-    return this.records ? this.records.$batches(viewer, from, to) : Promise.resolve([]);
+  batches(viewer: CountingViewer, from: Date, to: Date, search?: string) {
+    return this.records ? this.records.$batches(viewer, from, to, search) : Promise.resolve([]);
+  }
+
+  /** Names a batch (each of its photos); false when the viewer has no such batch. */
+  async nameBatch(viewer: CountingViewer, input: I.NamePhotoBatchInput): Promise<boolean> {
+    if (!this.records) throw new ServiceUnavailableException('Photo records are not kept here.');
+    const named = await this.records.$nameBatch(viewer, input.batchId, input.note?.trim() || null);
+    if (!named) throw new NotFoundException('No such batch of counted photos.');
+    return true;
+  }
+
+  /** Deletes a batch counted by mistake: it leaves every total. */
+  async deleteBatch(viewer: CountingViewer, batchId: string): Promise<boolean> {
+    if (!this.records) throw new ServiceUnavailableException('Photo records are not kept here.');
+    const deleted = await this.records.$deleteBatch(viewer, batchId);
+    if (!deleted) throw new NotFoundException('No such batch of counted photos.');
+    return true;
   }
 
   /**
@@ -323,10 +398,12 @@ export class PhotoCountService {
     const originals = new Map(
       (
         await this.records.$byIds([
-          ...new Set(rows.map(r => r.copyOfId).filter(Boolean))
+          ...new Set(rows.flatMap(r => [r.copyOfId, r.repeatsOfId]).filter(Boolean))
         ] as string[])
       ).map(o => [o.id, o])
     );
+    const refOf = (o?: CountingPhotoRecordEntity) =>
+      o ? { id: o.id, name: o.name, batchId: o.batchId, createdAt: o.createdAt } : null;
     return rows.map(r => {
       const o = r.copyOfId ? originals.get(r.copyOfId) : undefined;
       return {
@@ -337,9 +414,72 @@ export class PhotoCountService {
         count: r.count,
         byClass: r.byClass ?? [],
         createdAt: r.createdAt,
-        copyOf: o ? { id: o.id, name: o.name, batchId: o.batchId, createdAt: o.createdAt } : null
+        copyOf: refOf(o),
+        repeats: r.repeats ?? 0,
+        repeatsOf: refOf(r.repeatsOfId ? originals.get(r.repeatsOfId) : undefined),
+        added: r.added ?? 0,
+        removed: r.removed ?? 0
       };
     });
+  }
+
+  /**
+   * A counted photo fixed by hand in Count photos: parcels the model missed (added) and its boxes
+   * that are not parcels (removed); the batch's parcels follow.
+   */
+  async correctCount(viewer: CountingViewer, input: I.CorrectPhotoCountInput) {
+    if (!this.records) throw new ServiceUnavailableException('Photo records are not kept here.');
+    const record = await this.records.$visible(viewer, input.recordId);
+    if (!record) throw new NotFoundException('No such counted photo.');
+    if (input.removed > record.count)
+      throw new BadRequestException(
+        `The model counted ${record.count} in this photo: at most ${record.count} can be taken off.`
+      );
+    await this.records.update(record.id, { added: input.added, removed: input.removed });
+    const rows = await this.photoRecords(viewer, {
+      batchId: record.batchId,
+      from: record.createdAt,
+      to: record.createdAt,
+      limit: 1000
+    });
+    return rows.find(r => r.id === record.id);
+  }
+
+  /**
+   * Marks how many parcels of a counted photo an earlier photo of its batch already shows (one
+   * parcel photographed twice), so the batch counts them once; 0 clears the mark.
+   */
+  async markRepeats(viewer: CountingViewer, input: I.MarkPhotoRepeatsInput) {
+    if (!this.records) throw new ServiceUnavailableException('Photo records are not kept here.');
+    const record = await this.records.$visible(viewer, input.recordId);
+    if (!record) throw new NotFoundException('No such counted photo.');
+    if (record.copyOfId)
+      throw new BadRequestException(
+        'This photo is a copy of another one: it is not counted at all.'
+      );
+    if (input.repeats > record.count)
+      throw new BadRequestException(
+        `This photo has ${record.count} parcel${record.count === 1 ? '' : 's'}: at most ${
+          record.count
+        } can be repeats.`
+      );
+    let ofId: string | null = null;
+    if (input.repeats > 0) {
+      if (!input.ofRecordId)
+        throw new BadRequestException('Say which earlier photo shows these parcels (ofRecordId).');
+      const of = await this.records.$visible(viewer, input.ofRecordId);
+      if (!of || of.batchId !== record.batchId || of.id === record.id || of.copyOfId)
+        throw new BadRequestException('Pick another counted photo of the same batch.');
+      ofId = of.id;
+    }
+    await this.records.update(record.id, { repeats: input.repeats, repeatsOfId: ofId });
+    const rows = await this.photoRecords(viewer, {
+      batchId: record.batchId,
+      from: record.createdAt,
+      to: record.createdAt,
+      limit: 1000
+    });
+    return rows.find(r => r.id === record.id);
   }
 
   /** Every photo in a folder (not its sub-folders), by name, up to `limit`. */
@@ -413,6 +553,7 @@ export class PhotoCountService {
       boxes: detections.map(d => toBox(d)),
       skipped: skipped.map(s => ({ ...toBox(s.detection), reason: s.reason })),
       fingerprint: null,
+      embeddings: null,
       copyOf: null,
       recordId: null,
       copyOfRecord: null,
@@ -430,11 +571,41 @@ export class PhotoCountService {
     }
   }
 
-  /** The parcel model file, if there is one: PHOTO_MODEL_PATH, else models/parcel-world-l.onnx. */
+  /**
+   * Each box's look (rounded, to keep the answer small), when the look-alike model is there; null
+   * without it or when it fails (the count itself never fails for it).
+   */
+  private async embeddingsOf(frame: Frame, detections: Detection[]): Promise<number[][] | null> {
+    try {
+      this.embedder ??= (async () => {
+        const configured = this.config.env.PHOTO_EMBED_PATH;
+        if (configured === 'off') return null;
+        const path = resolve(process.cwd(), configured || DEFAULT_EMBED_MODEL);
+        const provider = ['demo', 'ultralytics'].includes(this.inference.provider)
+          ? this.config.env.MODEL_PROVIDER || 'cpu'
+          : this.inference.provider;
+        return loadEmbedder(path, provider, this.inference.threads);
+      })();
+      const embedder = await this.embedder;
+      if (!embedder || !detections.length) return embedder ? [] : null;
+      const vectors = await embedder.embed(
+        frame,
+        detections.map(d => d.box)
+      );
+      return vectors.map(v => Array.from(v, n => Math.round(n * 10000) / 10000));
+    } catch (error: any) {
+      this.logger.warn(`Parcel look-alike model: ${error?.message ?? error}`);
+      return null;
+    }
+  }
+
+  /** The parcel model file, if there is one: PHOTO_MODEL_PATH, else parcel-world-m (or -l) in models/. */
   photoModelPath(): string | null {
     const configured = this.config.env.PHOTO_MODEL_PATH;
-    const path = resolve(process.cwd(), configured || DEFAULT_PHOTO_MODEL);
-    return existsSync(path) ? path : null;
+    const paths = (configured ? [configured] : DEFAULT_PHOTO_MODELS).map(p =>
+      resolve(process.cwd(), p)
+    );
+    return paths.find(p => existsSync(p)) ?? null;
   }
 
   /**

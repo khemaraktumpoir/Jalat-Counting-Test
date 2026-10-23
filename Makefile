@@ -4,7 +4,7 @@
 .PHONY: help dev build start test lint format \
 	up down restart logs ps health rebuild \
 	seed model-inspect model-bench model-try frames \
-	export export-photo split train
+	export export-photo export-embedder split train
 
 # Use Git for Windows' bash for recipe shells (GNU Make on Windows can't run these via cmd.exe)
 ifeq ($(OS),Windows_NT)
@@ -122,9 +122,13 @@ export:
 	mv $(TRAIN)/weights/yolo26n.onnx models/yolo26n.onnx
 	@echo "models/yolo26n.onnx ready: make model-inspect"
 
-## export-photo: the parcel model for photo counts (YOLO-World, no training) into models/parcel-world-l.onnx
+## export-photo: the parcel model for photo counts (YOLO-World medium, no training) into models/parcel-world-m.onnx
 export-photo:
 	cd $(TRAIN)/ultralytics && $(PY) -P ../export_parcel_world.py
+
+## export-embedder: the parcel look-alike model for Count photos (CLIP) into models/parcel-embed.onnx
+export-embedder:
+	cd $(TRAIN) && $(PY) -P export_parcel_embedder.py
 
 ## split: labelled frames into train / val (EXPORT=<the labelling tool's YOLO export>)
 split:

@@ -26,7 +26,8 @@ export function resolveFfmpeg(configured?: string): string {
   return bundled;
 }
 
-const isStream = (url: string) => /^(rtsp|rtmp|http|https|udp|tcp):\/\//i.test(url);
+/** A network camera (rtsp://, http://…), not a video file. */
+export const isStream = (url: string) => /^(rtsp|rtmp|http|https|udp|tcp):\/\//i.test(url);
 
 /**
  * A phone camera ("phone:"): no stream to open — the warehouse app sends the phone's camera frames

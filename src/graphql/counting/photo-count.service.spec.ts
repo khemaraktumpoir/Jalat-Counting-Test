@@ -53,7 +53,12 @@ function service(roots: string, loaded = true) {
   };
   // No parcel model here: these tests count with the demo detector (the cameras' model).
   const config = {
-    env: { PHOTO_ROOTS: roots, DEFAULT_CONF: 0.4, PHOTO_MODEL_PATH: 'no-parcel-model.onnx' }
+    env: {
+      PHOTO_ROOTS: roots,
+      DEFAULT_CONF: 0.4,
+      PHOTO_MODEL_PATH: 'no-parcel-model.onnx',
+      PHOTO_EMBED_PATH: 'off'
+    }
   };
   return new PhotoCountService(inference as any, config as any);
 }
@@ -256,8 +261,19 @@ describe('PhotoCountService records: copies across batches', () => {
         rows.push(saved);
         return saved;
       },
-      update: async (ids: string[], change: any) => {
-        for (const r of rows) if (ids.includes(r.id)) Object.assign(r, change);
+      // update(ids, change) or update({ field: value }, change), as TypeORM takes them.
+      update: async (where: string[] | Record<string, unknown>, change: any) => {
+        const match = (r: any) =>
+          Array.isArray(where)
+            ? where.includes(r.id)
+            : Object.entries(where).every(([k, v]) => r[k] === v);
+        for (const r of rows) if (match(r)) Object.assign(r, change);
+      },
+      findOne: async ({ where }: { where: Record<string, unknown> }) =>
+        rows.find(r => Object.entries(where).every(([k, v]) => r[k] === v)) ?? null,
+      delete: async (id: string) => {
+        const i = rows.findIndex(r => r.id === id);
+        if (i >= 0) rows.splice(i, 1);
       }
     };
   }
@@ -272,7 +288,12 @@ describe('PhotoCountService records: copies across batches', () => {
       ffmpegPath: 'ffmpeg'
     };
     const config = {
-      env: { DEFAULT_CONF: 0.4, PHOTO_MODEL_PATH: 'no-parcel-model.onnx', PHOTO_DUP_DAYS: 7 }
+      env: {
+        DEFAULT_CONF: 0.4,
+        PHOTO_MODEL_PATH: 'no-parcel-model.onnx',
+        PHOTO_DUP_DAYS: 7,
+        PHOTO_EMBED_PATH: 'off'
+      }
     };
     return {
       records,
@@ -335,5 +356,194 @@ describe('PhotoCountService records: copies across batches', () => {
     const r = await photos.countJpeg(photo(640, 360, 1, 1), 'x.jpg');
     expect(r.recordId).toBeNull();
     expect(records.rows).toHaveLength(0);
+  });
+});
+
+describe('PhotoCountService records: a photo counted again', () => {
+  it('replaces its record (Retry), keeps the batch name, and is no copy of itself', async () => {
+    const rows: any[] = [];
+    let n = 0;
+    const records = {
+      $recentFingerprints: async () => rows.filter(r => r.fingerprint),
+      create: (row: any) => ({ ...row }),
+      save: async (row: any) => {
+        const saved = { ...row, id: `r${++n}`, createdAt: new Date(Date.now() + n) };
+        rows.push(saved);
+        return saved;
+      },
+      update: async (where: any, change: any) => {
+        for (const r of rows)
+          if (
+            Array.isArray(where)
+              ? where.includes(r.id)
+              : Object.entries(where).every(([k, v]) => r[k] === v)
+          )
+            Object.assign(r, change);
+      },
+      findOne: async ({ where }: any) =>
+        rows.find(r => Object.entries(where).every(([k, v]) => r[k] === v)) ?? null,
+      delete: async (id: string) =>
+        rows.splice(
+          rows.findIndex(r => r.id === id),
+          1
+        )
+    };
+    const inference = {
+      modelPath: DEMO_MODEL,
+      modelLoaded: true,
+      modelError: null,
+      labels: DEMO_LABELS,
+      ffmpegPath: 'ffmpeg'
+    };
+    const config = {
+      env: { DEFAULT_CONF: 0.4, PHOTO_MODEL_PATH: 'no-parcel-model.onnx', PHOTO_EMBED_PATH: 'off' }
+    };
+    const photos = new PhotoCountService(inference as any, config as any, records as any);
+    const viewer = { id: 'wh-1', userType: 'MOBILE_WAREHOUSE' } as any;
+    const save = { viewer, batchId: 'b1', seq: 0, note: ' Truck 3 ' };
+    await photos.countJpeg(photo(640, 360, 2, 1), 'a.jpg', {}, save);
+    const again = await photos.countJpeg(photo(640, 360, 2, 1), 'a.jpg', {}, save);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ id: again.recordId, copyOfId: null, batchNote: 'Truck 3' });
+    expect(again.copyOfRecord).toBeNull();
+  });
+});
+
+describe('PhotoCountService records: the same parcel in two photos of a batch', () => {
+  const viewer = { id: 'wh-1', userType: 'MOBILE_WAREHOUSE' } as any;
+  function withBatch() {
+    const at = new Date('2026-10-23T08:59:33Z');
+    const rows: any[] = [
+      {
+        id: 'a',
+        batchId: 'b1',
+        seq: 0,
+        name: '11-31-42.jpg',
+        count: 5,
+        byClass: [],
+        copyOfId: null
+      },
+      {
+        id: 'b',
+        batchId: 'b1',
+        seq: 1,
+        name: '11-31-48.jpg',
+        count: 7,
+        byClass: [],
+        copyOfId: null
+      },
+      { id: 'c', batchId: 'b1', seq: 2, name: 'copy.jpg', count: 7, byClass: [], copyOfId: 'b' },
+      { id: 'x', batchId: 'b2', seq: 0, name: 'other.jpg', count: 3, byClass: [], copyOfId: null }
+    ].map(r => ({
+      ...r,
+      ownerId: 'wh-1',
+      createdAt: at,
+      repeats: 0,
+      repeatsOfId: null,
+      added: 0,
+      removed: 0
+    }));
+    const records = {
+      rows,
+      $visible: async (_: any, id: string) => rows.find(r => r.id === id) ?? null,
+      $records: async (_: any, f: { batchId: string }) => rows.filter(r => r.batchId === f.batchId),
+      $byIds: async (ids: string[]) => rows.filter(r => ids.includes(r.id)),
+      update: async (id: string, change: any) =>
+        Object.assign(
+          rows.find(r => r.id === id),
+          change
+        )
+    };
+    const photos = new PhotoCountService({} as any, { env: {} } as any, records as any);
+    return { rows, photos };
+  }
+
+  it('marks the repeats and names the photo that shows them', async () => {
+    const { rows, photos } = withBatch();
+    const record = await photos.markRepeats(viewer, { recordId: 'b', repeats: 1, ofRecordId: 'a' });
+    expect(rows.find(r => r.id === 'b')).toMatchObject({ repeats: 1, repeatsOfId: 'a' });
+    expect(record).toMatchObject({
+      id: 'b',
+      count: 7,
+      repeats: 1,
+      repeatsOf: { id: 'a', name: '11-31-42.jpg' }
+    });
+  });
+
+  it('clears the mark with 0', async () => {
+    const { rows, photos } = withBatch();
+    await photos.markRepeats(viewer, { recordId: 'b', repeats: 1, ofRecordId: 'a' });
+    await photos.markRepeats(viewer, { recordId: 'b', repeats: 0 });
+    expect(rows.find(r => r.id === 'b')).toMatchObject({ repeats: 0, repeatsOfId: null });
+  });
+
+  it('refuses more repeats than parcels, another batch, a copy, or no photo', async () => {
+    const { photos } = withBatch();
+    await expect(
+      photos.markRepeats(viewer, { recordId: 'b', repeats: 8, ofRecordId: 'a' })
+    ).rejects.toThrow('at most 7');
+    await expect(
+      photos.markRepeats(viewer, { recordId: 'b', repeats: 1, ofRecordId: 'x' })
+    ).rejects.toThrow('same batch');
+    await expect(
+      photos.markRepeats(viewer, { recordId: 'b', repeats: 1, ofRecordId: 'c' })
+    ).rejects.toThrow('same batch');
+    await expect(
+      photos.markRepeats(viewer, { recordId: 'c', repeats: 1, ofRecordId: 'a' })
+    ).rejects.toThrow('copy');
+    await expect(photos.markRepeats(viewer, { recordId: 'b', repeats: 1 })).rejects.toThrow(
+      'ofRecordId'
+    );
+  });
+});
+
+describe('PhotoCountService records: a photo fixed by hand', () => {
+  const viewer = { id: 'wh-1', userType: 'MOBILE_WAREHOUSE' } as any;
+  function withPhoto() {
+    const rows: any[] = [
+      {
+        id: 'a',
+        batchId: 'b1',
+        seq: 0,
+        name: '11-31-02.jpg',
+        count: 3,
+        byClass: [],
+        copyOfId: null,
+        ownerId: 'wh-1',
+        createdAt: new Date(),
+        repeats: 0,
+        repeatsOfId: null,
+        added: 0,
+        removed: 0
+      }
+    ];
+    const records = {
+      $visible: async (_: any, id: string) => rows.find(r => r.id === id) ?? null,
+      $records: async () => rows,
+      $byIds: async () => [],
+      update: async (id: string, change: any) =>
+        Object.assign(
+          rows.find(r => r.id === id),
+          change
+        )
+    };
+    return { rows, photos: new PhotoCountService({} as any, { env: {} } as any, records as any) };
+  }
+
+  it('keeps the parcels added and the boxes taken off', async () => {
+    const { rows, photos } = withPhoto();
+    const record = await photos.correctCount(viewer, { recordId: 'a', added: 1, removed: 2 });
+    expect(rows[0]).toMatchObject({ added: 1, removed: 2 });
+    expect(record).toMatchObject({ count: 3, added: 1, removed: 2 });
+  });
+
+  it('takes off at most what the model counted', async () => {
+    const { photos } = withPhoto();
+    await expect(
+      photos.correctCount(viewer, { recordId: 'a', added: 0, removed: 4 })
+    ).rejects.toThrow('at most 3');
+    await expect(
+      photos.correctCount(viewer, { recordId: 'x', added: 1, removed: 0 })
+    ).rejects.toThrow('No such');
   });
 });

@@ -36,7 +36,7 @@ export * as U from './utils';
 | Decorators
 |--------------------------------------------------------------------------
 */
-export { Auth } from './decorators/auth.decorator';
+export { Auth, Permission } from './decorators/auth.decorator';
 export * from './decorators/dto.decorator';
 
 /*

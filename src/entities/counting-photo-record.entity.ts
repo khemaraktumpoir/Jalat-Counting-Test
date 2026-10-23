@@ -17,6 +17,10 @@ export class CountingPhotoRecordEntity {
   @Column({ type: 'uuid' })
   batchId!: string;
 
+  /** The batch's name, the same on each of its photos (e.g. a driver, a pickup, a truck). */
+  @Column({ type: 'varchar', length: 120, nullable: true })
+  batchNote!: string | null;
+
   /** The photo's place in its batch, as picked (0 first): within a batch the earlier one is the original. */
   @Column({ type: 'int', default: 0 })
   seq!: number;
@@ -40,6 +44,25 @@ export class CountingPhotoRecordEntity {
   /** The earlier record this photo is a copy of (not counted again); null for an original. */
   @Column({ type: 'uuid', nullable: true })
   copyOfId!: string | null;
+
+  /**
+   * Parcels in it that an earlier photo of its batch already shows (the same parcel photographed
+   * twice), marked by hand on the records page: left out of the batch's parcels.
+   */
+  @Column({ type: 'int', default: 0 })
+  repeats!: number;
+
+  /** The earlier photo of the batch that shows those parcels. */
+  @Column({ type: 'uuid', nullable: true })
+  repeatsOfId!: string | null;
+
+  /** Parcels the model missed, added by hand in Count photos (tapped on the photo). */
+  @Column({ type: 'int', default: 0 })
+  added!: number;
+
+  /** Boxes the model counted that are not parcels, taken off by hand in Count photos. */
+  @Column({ type: 'int', default: 0 })
+  removed!: number;
 
   /** Who counted it (the account id): a warehouse sees its own records, Operation and admins all. */
   @Column({ type: 'varchar', length: 100 })

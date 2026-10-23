@@ -11,7 +11,7 @@ import { GqlExecutionContext } from '@nestjs/graphql';
 import { JwtService } from '@nestjs/jwt';
 import { Redis } from 'ioredis';
 
-import { E } from '@common';
+import { C, E } from '@common';
 import { InjectIORedis } from '@lib/ioredis';
 
 import { JWTPayload } from './auth.interfaces';
@@ -29,6 +29,7 @@ export class GqlAuthGuard implements CanActivate {
     // const ctx = GqlExecutionContext.create(context);
     const handler = ctx.getHandler();
     const roles = this.reflector.get<string[]>('roles', handler);
+    const permissions = this.reflector.get<string[]>('permissions', handler) ?? [];
 
     if (roles === undefined) return true;
 
@@ -39,7 +40,11 @@ export class GqlAuthGuard implements CanActivate {
     const [scheme, token] = authToken.split(' ');
 
     const user = await this.checkUserScheme(scheme, token, roles);
-    (req as any).user = user;
+    const granted = await this.countingPermissions(user);
+    const missing = permissions.filter(code => !granted.includes(code as C.CountingPermission));
+    if (missing.length)
+      throw new ForbiddenException(`Your role may not do this (needs ${missing.join(', ')}).`);
+    (req as any).user = { ...user, permissions: granted };
 
     return true;
   }
@@ -65,6 +70,26 @@ export class GqlAuthGuard implements CanActivate {
       throw new UnauthorizedException('Unauthorized');
 
     return { ...decoded };
+  }
+
+  /**
+   * What this account may do here. No role (warehouses, Operation, as before roles): everything.
+   * A role: its COUNTING:* codes from the User Service's role cache in the shared Redis (written
+   * when the role is saved, or by scripts/seed-counter-role.ts); a full role: everything; a role
+   * not in the cache: nothing (save it again in the admin panel to cache it).
+   */
+  private async countingPermissions(user: JWTPayload): Promise<C.CountingPermission[]> {
+    if (!user.roleId) return C.ALL_COUNTING_PERMISSIONS;
+    const cached = await this.redis.get(C.userRoleKey(user.roleId));
+    if (!cached) return [];
+    let role: { isFullAuthorized?: boolean; permissions?: string[] };
+    try {
+      role = JSON.parse(cached);
+    } catch {
+      return [];
+    }
+    if (role.isFullAuthorized) return C.ALL_COUNTING_PERMISSIONS;
+    return C.ALL_COUNTING_PERMISSIONS.filter(code => role.permissions?.includes(code));
   }
 
   private getContext(context: ExecutionContext): any {

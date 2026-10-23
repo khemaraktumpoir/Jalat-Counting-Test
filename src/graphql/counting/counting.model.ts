@@ -277,7 +277,7 @@ export class PhotoModelInfo {
   })
   kind!: string;
 
-  @Field({ description: 'The model file, e.g. parcel-world-l.onnx' })
+  @Field({ description: 'The model file, e.g. parcel-world-m.onnx' })
   name!: string;
 
   @Field(() => Float, { description: 'The confidence used when none is sent' })
@@ -339,6 +339,13 @@ export class PhotoCount {
       "The photo's fingerprint (64 hex): photos within 40 bits of each other show the same scene (a copy)."
   })
   fingerprint!: string | null;
+
+  @Field(() => [[Float]], {
+    nullable: true,
+    description:
+      "Each box's look (512 numbers, same order as boxes), when the parcel look-alike model is there: the app compares them across a batch to suggest a parcel already in another photo."
+  })
+  embeddings!: number[][] | null;
 
   @Field(() => String, {
     nullable: true,
@@ -414,6 +421,21 @@ export class PhotoBatch {
   @Field(() => Int, { description: 'Photos that are copies of an earlier one.' })
   copies!: number;
 
+  @Field(() => Int, {
+    description:
+      'Parcels marked as already shown in an earlier photo of the batch (left out of parcels).'
+  })
+  repeats!: number;
+
+  @Field(() => Int, { description: 'Parcels added by hand (in parcels).' })
+  added!: number;
+
+  @Field(() => Int, { description: "The model's boxes taken off by hand (left out of parcels)." })
+  removed!: number;
+
+  @Field(() => String, { nullable: true, description: "The batch's name (a driver, a pickup…)." })
+  note!: string | null;
+
   @Field({ description: 'Who counted (the account id).' })
   ownerId!: string;
 }
@@ -448,4 +470,22 @@ export class PhotoRecord {
     description: 'The earlier photo it is a copy of; null for an original.'
   })
   copyOf!: PhotoRecordRef | null;
+
+  @Field(() => Int, {
+    description:
+      'Parcels in it that an earlier photo of the batch already shows (marked by hand): not counted again.'
+  })
+  repeats!: number;
+
+  @Field(() => PhotoRecordRef, {
+    nullable: true,
+    description: 'The earlier photo of the batch that shows those parcels.'
+  })
+  repeatsOf!: PhotoRecordRef | null;
+
+  @Field(() => Int, { description: 'Parcels the model missed, added by hand.' })
+  added!: number;
+
+  @Field(() => Int, { description: "The model's boxes taken off by hand (not parcels)." })
+  removed!: number;
 }

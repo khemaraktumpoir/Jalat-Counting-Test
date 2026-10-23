@@ -21,7 +21,8 @@
     "model:bench": "ts-node -r tsconfig-paths/register scripts/bench-model.ts",
     "model:try": "ts-node -r tsconfig-paths/register scripts/try-model.ts",
     "frames:grab": "ts-node -r tsconfig-paths/register scripts/grab-frames.ts",
-    "db:seed": "ts-node -r tsconfig-paths/register scripts/seed.ts"
+    "db:seed": "ts-node -r tsconfig-paths/register scripts/seed.ts",
+    "role:seed": "ts-node scripts/seed-counter-role.ts"
   },
   "lint-staged": {
     "src/**/*.ts": [

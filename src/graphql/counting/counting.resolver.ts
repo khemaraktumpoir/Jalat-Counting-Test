@@ -1,15 +1,23 @@
+import { applyDecorators, ForbiddenException } from '@nestjs/common';
 import { Args, ID, Int, Mutation, Parent, Query, ResolveField, Resolver } from '@nestjs/graphql';
 
-import { ArgsId, Auth, CurrentUser } from '@common';
+import { ArgsId, Auth, C, CurrentUser, Permission } from '@common';
 import { User } from '@graphql/user';
+import { isManualSource } from '@lib/inference';
 
 import * as I from './counting.input';
 import * as M from './counting.model';
 import { CountingService } from './counting.service';
 import { PhotoCountService } from './photo-count.service';
 
-/** Warehouses (their own cameras), Operation and admins (every camera). */
-const Counting = () => Auth('ADMIN', 'OPERATION', 'MOBILE_WAREHOUSE');
+const P = C.COUNTING_PERMISSIONS;
+
+/**
+ * Warehouses (their own cameras), Operation and admins (every camera); an account with a role (e.g.
+ * Counter) also needs these permission codes.
+ */
+const Counting = (...codes: C.CountingPermission[]) =>
+  applyDecorators(Auth('ADMIN', 'OPERATION', 'MOBILE_WAREHOUSE'), Permission(...codes));
 
 @Resolver(() => M.CountingCamera)
 export class CountingResolver {
@@ -21,25 +29,25 @@ export class CountingResolver {
   // ===========================
   // ---- QUERY ----
   // ===========================
-  @Counting()
+  @Counting(P.READ)
   @Query(() => [M.CountingCamera])
   countingCameras(@CurrentUser() user: User) {
     return this.service.cameras(user);
   }
 
-  @Counting()
+  @Counting(P.READ)
   @Query(() => M.CountingCamera)
   countingCamera(@ArgsId() id: string, @CurrentUser() user: User) {
     return this.service.camera(id, user);
   }
 
-  @Counting()
+  @Counting(P.READ)
   @Query(() => [M.CountingHistoryBucket])
   countingHistory(@Args() args: I.CountingHistoryArgs, @CurrentUser() user: User) {
     return this.service.history(args, user);
   }
 
-  @Counting()
+  @Counting(P.READ)
   @Query(() => [M.CountingClass], {
     description: 'The labels the model knows (models/classes.json).'
   })
@@ -47,7 +55,7 @@ export class CountingResolver {
     return this.service.classes();
   }
 
-  @Counting()
+  @Counting(P.COUNT)
   @Query(() => M.PhotoFolderCount, {
     description:
       "Counts the objects in every photo of a folder on the counting service (inside PHOTO_ROOTS), with the cameras' model. Upload photos instead with POST /api/v1/counting/photos."
@@ -61,16 +69,16 @@ export class CountingResolver {
     );
   }
 
-  @Counting()
+  @Counting(P.READ)
   @Query(() => [M.PhotoBatch], {
     description:
       'Batches of counted photos between from and to, newest first (a warehouse: its own).'
   })
   countingPhotoBatches(@Args() args: I.PhotoBatchesArgs, @CurrentUser() user: User) {
-    return this.photos.batches(user, new Date(args.from), new Date(args.to));
+    return this.photos.batches(user, new Date(args.from), new Date(args.to), args.search);
   }
 
-  @Counting()
+  @Counting(P.READ)
   @Query(() => [M.PhotoRecord], {
     description:
       "Counted photos: one batch's (batchId), or the copies (copiesOnly) between from and to; each with the photo it repeats."
@@ -87,7 +95,45 @@ export class CountingResolver {
     });
   }
 
-  @Counting()
+  @Counting(P.COUNT)
+  @Mutation(() => Boolean, {
+    description:
+      'Names a batch of counted photos (a driver, a pickup, a truck…); no note clears it.'
+  })
+  namePhotoBatch(@Args('input') input: I.NamePhotoBatchInput, @CurrentUser() user: User) {
+    return this.photos.nameBatch(user, input);
+  }
+
+  @Counting(P.COUNT)
+  @Mutation(() => Boolean, {
+    description: 'Deletes a batch counted by mistake: its photos leave every total.'
+  })
+  deletePhotoBatch(
+    @Args('batchId', { type: () => ID }) batchId: string,
+    @CurrentUser() user: User
+  ) {
+    return this.photos.deleteBatch(user, batchId);
+  }
+
+  @Counting(P.COUNT)
+  @Mutation(() => M.PhotoRecord, {
+    description:
+      'A counted photo fixed by hand: parcels the model missed (added) and boxes that are not parcels (removed). The batch counts follow.'
+  })
+  correctPhotoCount(@Args('input') input: I.CorrectPhotoCountInput, @CurrentUser() user: User) {
+    return this.photos.correctCount(user, input);
+  }
+
+  @Counting(P.COUNT)
+  @Mutation(() => M.PhotoRecord, {
+    description:
+      'Marks how many parcels of a counted photo an earlier photo of its batch already shows (one parcel photographed twice): the batch counts them once. 0 clears it.'
+  })
+  markPhotoRepeats(@Args('input') input: I.MarkPhotoRepeatsInput, @CurrentUser() user: User) {
+    return this.photos.markRepeats(user, input);
+  }
+
+  @Counting(P.READ)
   @Query(() => M.PhotoModelInfo, {
     description: "What counts photos: the parcel model (default), or the cameras' model."
   })
@@ -95,7 +141,7 @@ export class CountingResolver {
     return this.photos.modelInfo();
   }
 
-  @Counting()
+  @Counting(P.READ)
   @Query(() => [String], {
     description: 'The folders countingPhotoFolder may read (PHOTO_ROOTS).'
   })
@@ -103,25 +149,38 @@ export class CountingResolver {
     return this.photos.rootNames();
   }
 
-  @Counting()
+  @Counting(P.READ)
   @Query(() => M.CountingModelInfo)
   countingModel() {
     return this.service.model();
   }
 
+  @Counting()
+  @Query(() => [String], {
+    description:
+      "What the signed-in account may do here (COUNTING:READ, COUNT, CONTROL, SETTING): all of them without a role, else its role's."
+  })
+  countingPermissions(@CurrentUser() user: User) {
+    return user.permissions ?? [];
+  }
+
   // ===========================
   // ---- MUTATION ----
   // ===========================
+  // A manual counter (Count by scanning, made on first use) needs COUNT; a camera needs SETTING.
   @Counting()
   @Mutation(() => M.CountingCamera)
   createCountingCamera(
     @Args('input') input: I.CreateCountingCameraInput,
     @CurrentUser() user: User
   ) {
+    const needs = isManualSource(input.sourceUrl) ? P.COUNT : P.SETTING;
+    if (!user.permissions?.includes(needs))
+      throw new ForbiddenException(`Your role may not do this (needs ${needs}).`);
     return this.service.create(input, user);
   }
 
-  @Counting()
+  @Counting(P.SETTING)
   @Mutation(() => M.CountingCamera)
   updateCountingCamera(
     @Args('input') input: I.UpdateCountingCameraInput,
@@ -130,13 +189,13 @@ export class CountingResolver {
     return this.service.update(input, user);
   }
 
-  @Counting()
+  @Counting(P.SETTING)
   @Mutation(() => Boolean)
   deleteCountingCamera(@ArgsId() id: string, @CurrentUser() user: User) {
     return this.service.remove(id, user);
   }
 
-  @Counting()
+  @Counting(P.CONTROL)
   @Mutation(() => M.CountingCamera, {
     description: 'Starts counting (and with the service from now on).'
   })
@@ -144,13 +203,13 @@ export class CountingResolver {
     return this.service.start(id, user);
   }
 
-  @Counting()
+  @Counting(P.CONTROL)
   @Mutation(() => M.CountingCamera)
   stopCountingCamera(@ArgsId() id: string, @CurrentUser() user: User) {
     return this.service.stop(id, user);
   }
 
-  @Counting()
+  @Counting(P.CONTROL)
   @Mutation(() => M.CountingCamera, {
     description: 'Saves the counts so far, then counts "since reset" from zero.'
   })
@@ -158,13 +217,13 @@ export class CountingResolver {
     return this.service.reset(id, user);
   }
 
-  @Counting()
+  @Counting(P.SETTING)
   @Mutation(() => M.CountingRegion)
   saveCountingRegion(@Args('input') input: I.SaveCountingRegionInput, @CurrentUser() user: User) {
     return this.service.saveRegion(input, user);
   }
 
-  @Counting()
+  @Counting(P.READ)
   @Query(() => M.CountingOverview, {
     description:
       'Every visible source counted between from and to (e.g. today), and per hour or day: cameras vs counting by scanning.'
@@ -173,7 +232,7 @@ export class CountingResolver {
     return this.service.overview(args, user);
   }
 
-  @Counting()
+  @Counting(P.COUNT)
   @Mutation(() => M.ManualCountResult, {
     description:
       'A manual counter ("manual:"): count a parcel by its QR code (once since the last reset) or a tap; delta -1 takes it back.'
@@ -182,7 +241,7 @@ export class CountingResolver {
     return this.service.addManualCount(input, user);
   }
 
-  @Counting()
+  @Counting(P.READ)
   @Query(() => [M.ManualScan], {
     description: "A manual counter's latest QR codes since its last reset, newest first."
   })

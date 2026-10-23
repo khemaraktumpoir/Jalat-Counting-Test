@@ -191,7 +191,7 @@ GraphQL (`/v1`), roles `ADMIN`, `OPERATION`, `MOBILE_WAREHOUSE` (a warehouse see
 | `countingPhotoBatches(from, to)` | batches of counted photos (photos, parcels, copies), newest first |
 | `countingPhotoRecords(batchId, copiesOnly, from, to, limit)` | one batch's photos in the order picked, or the copies, each with the photo it repeats |
 | `countingPhotoRoots` | the folders `countingPhotoFolder` may read |
-| `countingPhotoModel` | what counts photos: `parcels` (the parcel model, default when `models/parcel-world-l.onnx` is there: every parcel, bag or box counts once) or `cameras` (the cameras' model, by label), and its default confidence |
+| `countingPhotoModel` | what counts photos: `parcels` (the parcel model, default when `models/parcel-world-m.onnx` is there: every parcel, bag or box counts once) or `cameras` (the cameras' model, by label), and its default confidence |
 | `POST /api/v1/counting/photos?name=&conf=&classes=` | REST: one uploaded photo (body `image/jpeg`): its count, by label, and the boxes (fractions of the photo); the warehouse app sends a batch one photo at a time |
 
 REST (token as `Authorization: Bearer …` or `?access_token=`, for `<img>`):
@@ -266,11 +266,11 @@ Service is set up to; `yarn install` turns the hooks on.
 
 ## Counting parcels in photos
 
-Photo counts (Count photos in the warehouse app, `POST /api/v1/counting/photos`, `countingPhotoFolder`) use the **parcel model** when `models/parcel-world-l.onnx` is there: YOLO-World told "parcel, plastic mailer bag, shopping bag, gift bag, cardboard box, package wrapped in plastic", so it finds parcels of any shape in a driver's pickup photos with no training. Overlapping boxes of one parcel and boxes over the floor are dropped, and every box is a "parcel". Make it once with `make export-photo` (about 190 MB; downloads the weights the first time). Without it, photos are counted with the cameras' model.
+Photo counts (Count photos in the warehouse app, `POST /api/v1/counting/photos`, `countingPhotoFolder`) use the **parcel model** when `models/parcel-world-m.onnx` is there: YOLO-World told "parcel, plastic mailer bag, shopping bag, gift bag, cardboard box, package wrapped in plastic", so it finds parcels of any shape in a driver's pickup photos with no training. Overlapping boxes of one parcel and boxes over the floor are dropped, and every box is a "parcel". Make it once with `make export-photo` (about 190 MB; downloads the weights the first time). Without it, photos are counted with the cameras' model.
 
 | Setting | Default | |
 |---|---|---|
-| `PHOTO_MODEL_PATH` | `models/parcel-world-l.onnx` | another parcel model |
+| `PHOTO_MODEL_PATH` | `models/parcel-world-m.onnx` | another parcel model |
 | `PHOTO_MODEL_SIZE` | `1280` | its input size (the export's `imgsz`) |
 | `PHOTO_CONF` | `0.06` | its confidence when the app sends none (parcels wrapped in paper score about 0.06) |
 

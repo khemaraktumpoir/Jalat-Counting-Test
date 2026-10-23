@@ -179,6 +179,18 @@ export class CameraManagerService implements OnApplicationBootstrap, OnModuleDes
     });
   }
 
+  private async finishVideo(cameraId: string): Promise<void> {
+    try {
+      await this.cameraRepo.update(cameraId, { enabled: false });
+    } catch (error: any) {
+      this.logger.error(
+        `Camera ${cameraId} not turned off after its video ended: ${error.message}`
+      );
+    }
+    await this.stop(cameraId);
+    this.logger.log(`Camera ${cameraId}: the video ended (no loop), stopped.`);
+  }
+
   async restart(camera: CountingCameraEntity): Promise<void> {
     await this.stop(camera.id);
     await this.start(camera);
@@ -324,6 +336,10 @@ export class CameraManagerService implements OnApplicationBootstrap, OnModuleDes
         run.previewListeners.forEach(listener => listener(jpeg));
         break;
       }
+      case 'ended':
+        // The video file is over and does not loop: off, as with Stop (Start plays it again).
+        if (this.running.get(cameraId) === run) void this.finishVideo(cameraId);
+        break;
     }
   }
 

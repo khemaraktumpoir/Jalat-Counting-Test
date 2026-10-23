@@ -39,4 +39,6 @@ export type FromWorker =
   | { type: 'status'; status: RunStatus; fps: number; error?: string }
   | { type: 'count'; counts: Counts }
   | { type: 'snapshot'; requestId: number; jpeg: Uint8Array | null; error?: string }
-  | { type: 'preview'; jpeg: Uint8Array };
+  | { type: 'preview'; jpeg: Uint8Array }
+  /** A video file reached its end and does not loop: the camera stops (its counts are final). */
+  | { type: 'ended' };

@@ -92,6 +92,10 @@ export class User {
 
   @Field(() => DriverZone, { nullable: true })
   driverZone?: DriverZone;
+
+  /** Not in the schema: the token's role and what it may do here (set by the auth guard). */
+  roleId?: number | null;
+  permissions?: string[];
 }
 
 @ObjectType()

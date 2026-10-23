@@ -2,7 +2,7 @@ import { BadRequestException, Controller, Post, Query, Req, UseFilters } from '@
 import { isUUID } from 'class-validator';
 import { Request } from 'express';
 
-import { Auth, RestExceptionFilter } from '@common';
+import { Auth, C, Permission, RestExceptionFilter } from '@common';
 import { PhotoCountService } from '@graphql/counting';
 
 /**
@@ -19,6 +19,7 @@ export class PhotosController {
   constructor(private readonly photos: PhotoCountService) {}
 
   @Auth('ADMIN', 'OPERATION', 'MOBILE_WAREHOUSE')
+  @Permission(C.COUNTING_PERMISSIONS.COUNT)
   @Post()
   count(
     @Req() req: Request,
@@ -26,7 +27,8 @@ export class PhotosController {
     @Query('conf') conf?: string,
     @Query('classes') classes?: string,
     @Query('batch') batch?: string,
-    @Query('seq') seq?: string
+    @Query('seq') seq?: string,
+    @Query('note') note?: string
   ) {
     const jpeg = req.body;
     if (!Buffer.isBuffer(jpeg) || !jpeg.length)
@@ -46,7 +48,9 @@ export class PhotosController {
       jpeg,
       (name ?? 'photo.jpg').slice(0, 200),
       { conf: score, classes: ids },
-      batch && user ? { viewer: user, batchId: batch, seq: place } : undefined
+      batch && user
+        ? { viewer: user, batchId: batch, seq: place, note: note?.slice(0, 120) }
+        : undefined
     );
   }
 }

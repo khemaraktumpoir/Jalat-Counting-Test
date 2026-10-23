@@ -294,6 +294,69 @@ export class PhotoBatchesArgs {
   @Field({ description: 'To (ISO date-time)' })
   @IsDateString()
   to!: string;
+
+  @Field({ nullable: true, description: "Words in the batch's name or a photo's name." })
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  search?: string;
+}
+
+@InputType({ description: 'A name for a batch of counted photos (a driver, a pickup, a truck…).' })
+export class NamePhotoBatchInput {
+  @Field(() => ID)
+  @IsUUID()
+  batchId!: string;
+
+  @Field({ nullable: true, description: 'Empty or left out: no name.' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  note?: string;
+}
+
+@InputType({
+  description:
+    'Parcels in a counted photo that an earlier photo of the same batch already shows (one parcel photographed twice).'
+})
+export class MarkPhotoRepeatsInput {
+  @Field(() => ID, { description: 'The photo (PhotoRecord.id).' })
+  @IsUUID()
+  recordId!: string;
+
+  @Field(() => Int, { description: 'How many of its parcels are repeats; 0 clears the mark.' })
+  @IsInt()
+  @Min(0)
+  repeats!: number;
+
+  @Field(() => ID, {
+    nullable: true,
+    description: 'The earlier photo of the batch that shows them (needed when repeats > 0).'
+  })
+  @IsOptional()
+  @IsUUID()
+  ofRecordId?: string;
+}
+
+@InputType({
+  description:
+    'A counted photo fixed by hand: parcels the model missed (added) and boxes that are not parcels (removed).'
+})
+export class CorrectPhotoCountInput {
+  @Field(() => ID, { description: 'The photo (PhotoRecord.id).' })
+  @IsUUID()
+  recordId!: string;
+
+  @Field(() => Int, { description: 'Parcels added by hand.' })
+  @IsInt()
+  @Min(0)
+  @Max(500)
+  added!: number;
+
+  @Field(() => Int, { description: "The model's boxes taken off (not parcels)." })
+  @IsInt()
+  @Min(0)
+  removed!: number;
 }
 
 @ArgsType()
