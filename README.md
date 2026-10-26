@@ -13,6 +13,19 @@ service: no Python at runtime, several cameras, live counts for the apps, histor
   blocks the API.
 - The warehouse app (`app.client/warehouse`, the **Count** tab) is the dashboard.
 
+## Current project status
+
+The counting service and photo-counting flow are implemented. This workspace has the pretrained
+`yolo26n.onnx` camera baseline and the exported YOLO-World / CLIP photo-counting models
+(`parcel-world-m.onnx`, `parcel-world-l.onnx`, `parcel-embed.onnx`). Those photo models are
+zero-shot exports: they do **not** mean a conveyor-specific parcel detector has been trained.
+
+The belt-model dataset in `../Jalat-Ultralytics-Service/datasets/parcels/` currently has no
+captured or labelled images, and `models/parcel.onnx` is not present. The next model milestone is
+to capture and label frames from the chosen pilot belt, then train, validate, and benchmark a
+parcel detector. See the [training guide](../Jalat-Ultralytics-Service/README.md),
+[rollout plan](docs/rollout-plan.md), and [TODO checklist](TODO.md).
+
 ```
 ffmpeg (rgb24 frames at the camera's fps, scaled to width × height)
   → letterbox 640×640 → YOLO26 ONNX [1, 300, 6] → IoU tracker → line / area counter
@@ -53,7 +66,7 @@ ffmpeg (rgb24 frames at the camera's fps, scaled to width × height)
 | `src/lib/{config,typeorm,ioredis,jwt,mqtt}` | the service's plumbing, as in the other Jalat services |
 | `src/common/`, `entities/`, `repositories/` | shared helpers, the tables, their queries |
 | `scripts/` | `db:seed`, `model:inspect`, `model:bench`, `model:try`, `frames:grab` |
-| `models/` | what the service runs: `yolo26n.onnx` (or a parcel model) and its `classes.json` (not committed) |
+| `models/` | camera baseline `yolo26n.onnx`, optional trained belt model `parcel.onnx`, and photo-count models (not committed) |
 | `samples/` | `conveyor-synthetic.mp4`, the test belt |
 | `../Jalat-Ultralytics-Service/` | making a parcel model (next to this service, not in it): `ultralytics/` (repo + Python env), `weights/`, datasets, runs and the scripts — see its `README.md` |
 | `docs/` | `rollout-plan.md`: pilot → data → model → scans → all sites |
@@ -94,7 +107,7 @@ output, which needs NMS and which this service cannot read.
 git, AGPL-3.0; not part of this service, not in the Docker image) with a ready Python 3.13
 environment, `.venv313` (PyTorch CPU, torchvision, Ultralytics installed from the repo).
 `../Jalat-Ultralytics-Service/weights/` keeps the starting weights (`yolo26n.pt`) and `yolo11n.onnx`
-as a speed baseline. Export with `make export`, or by hand:
+as a speed baseline. Export the camera baseline with `make export`, or by hand:
 
 ```bash
 cd ../Jalat-Ultralytics-Service/ultralytics
@@ -102,7 +115,10 @@ cd ../Jalat-Ultralytics-Service/ultralytics
 #   → ../Jalat-Ultralytics-Service/weights/yolo26n.onnx: copy it to models/
 ```
 
-A parcel model is trained and exported in one step: `../Jalat-Ultralytics-Service/README.md` (`train_parcels.py`).
+A belt-specific parcel model can be trained and exported in one step after preparing a labelled
+dataset: `../Jalat-Ultralytics-Service/README.md` (`train_parcels.py`). It writes
+`models/parcel.onnx` and `models/parcel.classes.json`; these are not currently present in this
+workspace.
 
 Without Python, with Docker (the official CPU image; the file lands in `models/`):
 
