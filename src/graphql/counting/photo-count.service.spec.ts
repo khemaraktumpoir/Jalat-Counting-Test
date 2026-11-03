@@ -43,7 +43,7 @@ function photo(width: number, height: number, boxes: number, scene = 0, mark = f
   return encodeJpeg({ data: rgba, width, height }, 90).data;
 }
 
-function service(roots: string, loaded = true) {
+function service(roots: string, loaded = true, env: Record<string, unknown> = {}) {
   const inference = {
     modelPath: DEMO_MODEL,
     modelLoaded: loaded,
@@ -57,7 +57,8 @@ function service(roots: string, loaded = true) {
       PHOTO_ROOTS: roots,
       DEFAULT_CONF: 0.4,
       PHOTO_MODEL_PATH: 'no-parcel-model.onnx',
-      PHOTO_EMBED_PATH: 'off'
+      PHOTO_EMBED_PATH: 'off',
+      ...env
     }
   };
   return new PhotoCountService(inference as any, config as any);
@@ -167,9 +168,24 @@ describe('PhotoCountService', () => {
   });
 
   it('says why when there is no model', async () => {
-    await expect(service(dir, false).countJpeg(photo(64, 64, 0), 'x.jpg')).rejects.toThrow(
-      /No model to count with: Model not found/
+    const counting = service(dir, false).countJpeg(photo(64, 64, 0), 'x.jpg');
+    await expect(counting).rejects.toThrow(/No model to count with: Model not found/);
+    await expect(counting).rejects.toMatchObject({ status: 503 });
+  });
+
+  it('says "busy, try again" (429) past the photos one user may have waiting', async () => {
+    const photos = service(dir, true, { PHOTO_QUEUE_PER_USER: 1 });
+    const jpeg = photo(320, 240, 1);
+    // The first is counted at once, the second waits, the third is one too many.
+    const counted = [1, 2, 3].map(n =>
+      photos.countJpeg(jpeg, `p-${n}.jpg`, {}, undefined, 'user-1')
     );
+    await expect(counted[2]).rejects.toMatchObject({ status: 429 });
+    // Another user still gets a turn.
+    await expect(photos.countJpeg(jpeg, 'q.jpg', {}, undefined, 'user-2')).resolves.toMatchObject({
+      count: 1
+    });
+    await expect(Promise.all(counted.slice(0, 2))).resolves.toHaveLength(2);
   });
 
   it('adds labels up over photos, the most first', () => {
@@ -243,6 +259,34 @@ describe('tidyParcels', () => {
     expect(tidyParcels([d(0, 0, 200, 200, 0.5), d(150, 0, 350, 200, 0.5)], 1000, 800)).toHaveLength(
       2
     );
+  });
+
+  // From a real pickup pile (27 Oct 2026, photos/real-2026-10-27): the model's surest box went
+  // round a yellow mailer and the mailer below it, and each mailer had a box of its own.
+  it('drops one box around several parcels (a group) and counts the parcels in it', () => {
+    const { kept, skipped } = sortParcels(
+      [d(237, 533, 819, 1305, 0.55), d(194, 546, 695, 1004, 0.12), d(277, 976, 818, 1306, 0.09)],
+      1200,
+      1600
+    );
+    expect(kept.map(k => k.score)).toEqual([0.12, 0.09]);
+    expect(skipped.map(s => [s.detection.score, s.reason])).toEqual([[0.55, 'group']]);
+  });
+
+  it('keeps a small parcel lying on a bigger one: not the same parcel boxed twice', () => {
+    // A small mailer on a yellow one: 60 % of it lies inside, but it is a quarter of the size.
+    const kept = tidyParcels([d(194, 546, 695, 1004, 0.5), d(539, 575, 796, 782, 0.3)], 1200, 1600);
+    expect(kept).toHaveLength(2);
+  });
+
+  it('keeps a weak whole parcel on a sure one, drops a weak corner or label of it', () => {
+    const sure = d(100, 100, 600, 600, 0.6);
+    const smallParcel = d(400, 400, 520, 520, 0.05); // 6 % of the sure box: a parcel on it
+    const corner = d(100, 100, 400, 400, 0.05); // 36 %: a corner of it
+    const label = d(300, 300, 380, 360, 0.05); // 2 %: its sticker
+    const { kept, skipped } = sortParcels([sure, smallParcel, corner, label], 1000, 1000);
+    expect(kept).toEqual([sure, smallParcel]);
+    expect(skipped.map(s => s.reason)).toEqual(['weak', 'weak']);
   });
 });
 

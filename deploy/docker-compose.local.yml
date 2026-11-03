@@ -41,7 +41,7 @@ services:
       # MQTT_* come from .env (the apps' dev broker). For the local mosquitto above instead, set
       # MQTT_HOST=mqtt://mosquitto and MQTT_PORT=1883 in .env.
     volumes:
-      - ../samples:/usr/src/samples:ro
+      - ../test-videos:/usr/src/test-videos:ro
       # Photos to count by folder (countingPhotoFolder: photos/...).
       - ../photos:/usr/src/photos:ro
     # Open on this machine as before (the warehouse app's dev server proxies to :9096).
@@ -53,6 +53,15 @@ services:
     depends_on:
       - postgres
       - mosquitto
+
+  # The camera relay (COMPOSE_PROFILES=relay): cam1 is a looped test video (go2rtc.local.yaml).
+  go2rtc:
+    volumes: !override
+      - ./go2rtc.local.yaml:/config/go2rtc.yaml
+      - ../test-videos:/test-videos:ro
+    # RTSP on this machine too: the PC's webcam is pushed in here (yarn pc-camera, cam2).
+    ports:
+      - '127.0.0.1:8554:8554'
 
 volumes:
   counting-pg:

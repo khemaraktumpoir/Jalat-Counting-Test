@@ -28,6 +28,16 @@ export class CountingCameraEntity {
   @Column({ type: 'boolean', default: false })
   enabled!: boolean;
 
+  /**
+   * Counts only from startTime up to endTime each day ("HH:mm", C.TIME_ZONE; an end before the start
+   * runs over midnight); both null = all day. An enabled camera starts and stops on it by itself.
+   */
+  @Column({ type: 'varchar', length: 5, nullable: true })
+  startTime!: string | null;
+
+  @Column({ type: 'varchar', length: 5, nullable: true })
+  endTime!: string | null;
+
   @Column({ type: 'int', default: 10 })
   fps!: number;
 
@@ -48,9 +58,23 @@ export class CountingCameraEntity {
   @Column({ type: 'boolean', default: true })
   loop!: boolean;
 
-  /** The mobile warehouse (user id) the camera belongs to; null = Operation's (the hub). */
+  /**
+   * This camera's detector instead of the service's MODEL_PATH; null = the service's. Only
+   * demo:orange for now (the synthetic test videos are orange boxes a parcel model does not see).
+   */
+  @Column({ type: 'varchar', length: 200, nullable: true })
+  model!: string | null;
+
+  /**
+   * The first of `warehouseIds`, kept for the clients and rows from before a camera could belong to
+   * several warehouses; null = Operation's (the hub).
+   */
   @Column({ type: 'varchar', length: 100, nullable: true })
   warehouseId!: string | null;
+
+  /** The mobile warehouses (user ids) the camera belongs to: each one and its Counters see it. */
+  @Column({ type: 'varchar', length: 100, array: true, default: () => "'{}'" })
+  warehouseIds!: string[];
 
   /** "Since reset" counts start here. */
   @Column({ type: 'timestamptz', default: () => 'CURRENT_TIMESTAMP' })

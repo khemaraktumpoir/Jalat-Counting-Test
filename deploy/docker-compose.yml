@@ -14,6 +14,8 @@
 #   redis-tunnel  "redis-tunnel": the server's Redis over SSH, when it only listens on the server
 #   caddy         "https": HTTPS with a free certificate for DOMAIN (a VPS with a domain)
 #   cloudflared   "cloudflare": Cloudflare Tunnel, HTTPS without an open port (a PC on site)
+#   go2rtc        "relay": the camera relay — each camera at a fixed rtsp://go2rtc:8554/camN
+#                 (deploy/go2rtc.yaml), for cameras the service should not reach directly
 
 # A fixed project name: the same containers and volumes whichever folder it is run from.
 name: jalat-counting-service
@@ -96,6 +98,19 @@ services:
       TUNNEL_TOKEN: ${TUNNEL_TOKEN:-}
     depends_on:
       - counting
+    logging: *logging
+
+  go2rtc:
+    profiles: ['relay']
+    image: alexxit/go2rtc:1.9.4
+    restart: unless-stopped
+    volumes:
+      # Its page writes the streams added there back into this file: mounted read-write.
+      - ${GO2RTC_CONFIG:-./go2rtc.yaml}:/config/go2rtc.yaml
+    # Its page (streams, previews) on this machine only; the counting service reads it inside
+    # Docker at go2rtc:8554, so 8554 needs no open port.
+    ports:
+      - '${GO2RTC_BIND:-127.0.0.1}:1984:1984'
     logging: *logging
 
 volumes:

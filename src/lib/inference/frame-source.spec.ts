@@ -6,7 +6,8 @@ import {
   grabJpeg,
   inputArgs,
   isPhoneSource,
-  missingFileError
+  missingFileError,
+  resolveFfmpeg
 } from './frame-source';
 
 // A camera's source: a stream (rtsp / http…) or a video file; a file that is not there is said
@@ -15,15 +16,15 @@ describe('missingFileError', () => {
   it('nothing to say for a camera stream or a file that is there', () => {
     expect(missingFileError('rtsp://10.0.0.5:554/stream1')).toBeNull();
     expect(missingFileError('http://cam.local/video.mjpg')).toBeNull();
-    expect(missingFileError('samples/conveyor-synthetic.mp4')).toBeNull();
+    expect(missingFileError('test-videos/warehouse-zone-by-hand.mp4')).toBeNull();
   });
 
   it('names a missing file, and a Windows path on another system', () => {
-    expect(missingFileError('samples/nope.mp4')).toBe(
-      'The video file is not there: samples/nope.mp4'
+    expect(missingFileError('test-videos/nope.mp4')).toBe(
+      'The video file is not there: test-videos/nope.mp4'
     );
-    const windows = missingFileError('C:\\Users\\me\\samples\\belt.mp4');
-    expect(windows).toContain('The video file is not there: C:\\Users\\me\\samples\\belt.mp4');
+    const windows = missingFileError('C:\\Users\\me\\test-videos\\belt.mp4');
+    expect(windows).toContain('The video file is not there: C:\\Users\\me\\test-videos\\belt.mp4');
     if (process.platform !== 'win32') expect(windows).toContain('a Windows path');
   });
 });
@@ -31,14 +32,14 @@ describe('missingFileError', () => {
 describe('a missing video file', () => {
   it('ends the frame source with that message (no ffmpeg run)', done => {
     const source = new FrameSource({
-      url: 'samples/nope.mp4',
+      url: 'test-videos/nope.mp4',
       fps: 5,
       width: 64,
       height: 36,
       ffmpegPath: 'ffmpeg-not-used'
     });
     source.on('end', ({ error }: { error?: string }) => {
-      expect(error).toBe('The video file is not there: samples/nope.mp4');
+      expect(error).toBe('The video file is not there: test-videos/nope.mp4');
       done();
     });
     source.start();
@@ -46,19 +47,24 @@ describe('a missing video file', () => {
 
   it('fails grabbing a snapshot with that message', async () => {
     await expect(
-      grabJpeg({ url: 'samples/nope.mp4', width: 64, height: 36, ffmpegPath: 'ffmpeg-not-used' })
+      grabJpeg({
+        url: 'test-videos/nope.mp4',
+        width: 64,
+        height: 36,
+        ffmpegPath: 'ffmpeg-not-used'
+      })
     ).rejects.toThrow('The video file is not there');
   });
 });
 
 describe('inputArgs', () => {
   it('a file loops and plays at its own speed; rtsp goes over TCP with a timeout', () => {
-    expect(inputArgs('samples/a.mp4', true)).toEqual([
+    expect(inputArgs('test-videos/a.mp4', true)).toEqual([
       '-stream_loop',
       '-1',
       '-re',
       '-i',
-      'samples/a.mp4'
+      'test-videos/a.mp4'
     ]);
     expect(inputArgs('rtsp://cam/1', true).slice(0, 2)).toEqual(['-rtsp_transport', 'tcp']);
   });
@@ -89,5 +95,23 @@ describe('phone camera', () => {
     const frame = frameOfJpeg(jpegOf(128, 72), 64, 36);
     expect([frame.width, frame.height, frame.data.length]).toEqual([64, 36, 64 * 36 * 3]);
     expect(Math.abs(frame.data[frame.data.length - 2] - 120)).toBeLessThan(12);
+  });
+});
+
+// Which ffmpeg: ffmpeg-static's Linux build crashes on a host name (rtsp://go2rtc:8554/cam1), so a
+// system ffmpeg (the Docker image's) comes before it.
+describe('resolveFfmpeg', () => {
+  it('FFMPEG_PATH when set', () => {
+    expect(resolveFfmpeg('/opt/ffmpeg/bin/ffmpeg', __filename)).toBe('/opt/ffmpeg/bin/ffmpeg');
+  });
+
+  it("the system's ffmpeg when there is one", () => {
+    // any file that exists stands for /usr/bin/ffmpeg
+    expect(resolveFfmpeg('', __filename)).toBe(__filename);
+  });
+
+  it("ffmpeg-static's without a system one", () => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    expect(resolveFfmpeg(undefined, '/nowhere/ffmpeg')).toBe(require('ffmpeg-static'));
   });
 });

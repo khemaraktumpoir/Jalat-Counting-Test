@@ -1,7 +1,19 @@
 import { spawn } from 'child_process';
-import { decode as decodeJpeg } from 'jpeg-js';
+import { decode as decodeJpeg, encode as encodeJpeg } from 'jpeg-js';
 
 import type { Frame } from '@lib/counting';
+
+/** An rgb24 frame as a JPEG (jpeg-js wants RGBA). */
+export function frameToJpeg(frame: Frame, quality = 80): Buffer {
+  const rgba = Buffer.alloc(frame.width * frame.height * 4);
+  for (let i = 0, j = 0; i < frame.data.length; i += 3, j += 4) {
+    rgba[j] = frame.data[i];
+    rgba[j + 1] = frame.data[i + 1];
+    rgba[j + 2] = frame.data[i + 2];
+    rgba[j + 3] = 255;
+  }
+  return encodeJpeg({ data: rgba, width: frame.width, height: frame.height }, quality).data;
+}
 
 /** Photos are counted at this size at most (the longer side, in pixels): enough for the model, light on memory. */
 export const PHOTO_MAX_SIDE = 1600;

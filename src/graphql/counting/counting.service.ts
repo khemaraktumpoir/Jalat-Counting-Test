@@ -4,12 +4,19 @@ import {
   Injectable,
   NotFoundException
 } from '@nestjs/common';
-import { CountingViewer } from 'src/repositories/counting-camera.repository';
+import { CountingViewer, warehouseScope } from 'src/repositories/counting-camera.repository';
 import { hourStart, mergeByClass } from 'src/repositories/counting-snapshot.repository';
 
 import { C, E } from '@common';
 import { CountingCameraEntity } from '@entities';
-import { isManualSource } from '@lib/inference';
+import { PLATFORM_MODEL } from '@lib/counting';
+import {
+  isManualSource,
+  isNetworkCamera,
+  isStream,
+  testVideoPreset,
+  TestVideoPreset
+} from '@lib/inference';
 import {
   CountingCameraRepository,
   CountingManualScanRepository,
@@ -22,8 +29,6 @@ import * as I from './counting.input';
 import * as M from './counting.model';
 import { byClassList, classList, regionProblem } from './counting.rules';
 import { InferenceService } from './inference.service';
-
-const isWarehouse = (viewer: CountingViewer) => viewer.userType === E.UserTypeEnum.MOBILE_WAREHOUSE;
 
 @Injectable()
 export class CountingService {
@@ -52,24 +57,135 @@ export class CountingService {
     viewer: CountingViewer
   ): Promise<CountingCameraEntity> {
     this.checkClasses(input.classes);
+    this.checkModel(input.model);
+    // A test video of cameras.json: its detector and its line or area come with it.
+    const preset = testVideoPreset(input.sourceUrl);
+    const warehouses = withWarehouses(this.newCameraWarehouses(askedWarehouses(input), viewer));
+    await this.checkSameStream(input.sourceUrl, warehouses.warehouseIds);
+    await this.checkOneNetworkCamera(input.sourceUrl, warehouses.warehouseIds);
     const camera = await this.cameraRepo.save(
       this.cameraRepo.create({
         name: input.name.trim(),
         sourceUrl: input.sourceUrl.trim(),
         enabled: input.enabled ?? false,
+        ...schedule(input.startTime ?? null, input.endTime ?? null),
         fps: input.fps ?? C.DEFAULT_CAMERA_FPS,
         confThreshold: input.confThreshold ?? C.DEFAULT_CONF_THRESHOLD,
         classes: input.classes ?? [],
         width: input.width ?? 1280,
         height: input.height ?? 720,
         loop: input.loop ?? true,
-        // A mobile warehouse's camera is its own; Operation picks the warehouse (or none: the hub).
-        warehouseId: isWarehouse(viewer) ? viewer.id : input.warehouseId ?? null,
+        model: input.model ?? preset?.model ?? null,
+        // A mobile warehouse's camera is its own, a registered Counter's some of its warehouses (the
+        // ones it picked, else its first); Operation picks the warehouses (or none: the hub).
+        ...warehouses,
         createdBy: viewer.id
       })
     );
+    if (preset) await this.presetRegion(camera, preset, viewer.id);
     if (camera.enabled) await this.manager.start(camera);
     return camera;
+  }
+
+  /**
+   * Where a new camera goes: for a mobile warehouse or a Counter, the warehouses asked for when they
+   * are all theirs (refused otherwise), else their first; for Operation, the ones asked for or none.
+   */
+  private newCameraWarehouses(asked: string[] | undefined, viewer: CountingViewer): string[] {
+    const scope = warehouseScope(viewer);
+    if (!scope) return asked ?? [];
+    if (!asked?.length) return [scope[0]];
+    if (asked.some(w => !scope.includes(w)))
+      throw new ForbiddenException('That is not one of your warehouses.');
+    return asked;
+  }
+
+  /**
+   * A saved camera's new warehouses: Operation sets any (none = the hub); a mobile warehouse or a
+   * Counter only changes its own among them, keeps the others' and cannot leave itself none.
+   */
+  private changedWarehouses(
+    camera: CountingCameraEntity,
+    asked: string[],
+    viewer: CountingViewer
+  ): string[] {
+    const scope = warehouseScope(viewer);
+    if (!scope) return asked;
+    if (asked.some(w => !scope.includes(w)))
+      throw new ForbiddenException('A warehouse cannot give its camera to another warehouse.');
+    if (!asked.length) throw new BadRequestException('Keep at least one of your warehouses.');
+    const others = camera.warehouseIds.filter(w => !scope.includes(w));
+    return [...new Set([...asked, ...others])];
+  }
+
+  /**
+   * A network camera (a stream address) is added once per warehouse: another camera on the same
+   * address in one of these warehouses (none: the hub's) is refused — tick more warehouses on that
+   * one instead. Phones, counting by scanning and video files are not checked.
+   */
+  private async checkSameStream(
+    sourceUrl: string,
+    warehouseIds: string[],
+    exceptId?: string
+  ): Promise<void> {
+    const url = sourceUrl.trim();
+    if (!isStream(url)) return;
+    const same = await this.cameraRepo.find({ where: { sourceUrl: url } });
+    const taken = same.find(
+      c =>
+        c.id !== exceptId &&
+        (warehouseIds.length
+          ? c.warehouseIds.some(w => warehouseIds.includes(w))
+          : !c.warehouseIds.length)
+    );
+    if (taken)
+      throw new BadRequestException(
+        `"${taken.name}" already uses this camera address for that warehouse. Tick more warehouses on it instead of adding it again.`
+      );
+  }
+
+  /**
+   * A warehouse has one network camera: another one in one of these warehouses (none: the hub's)
+   * is refused — change that one's address instead, or delete it first. Phones (this app or an
+   * IP-camera app), counting by scanning and video files are not network cameras.
+   */
+  private async checkOneNetworkCamera(
+    sourceUrl: string,
+    warehouseIds: string[],
+    exceptId?: string
+  ): Promise<void> {
+    if (!isNetworkCamera(sourceUrl)) return;
+    const cameras = await this.cameraRepo.find();
+    const taken = cameras.find(
+      c =>
+        c.id !== exceptId &&
+        isNetworkCamera(c.sourceUrl) &&
+        (warehouseIds.length
+          ? c.warehouseIds.some(w => warehouseIds.includes(w))
+          : !c.warehouseIds.length)
+    );
+    if (taken)
+      throw new BadRequestException(
+        `"${taken.name}" is already this warehouse's network camera: a warehouse has one. Change its address instead, or delete it first.`
+      );
+  }
+
+  /**
+   * A new camera on a test video: the line or area of cameras.json, scaled to the camera's
+   * picture size when another was chosen. Left to draw by hand if it would not fit.
+   */
+  private async presetRegion(
+    camera: CountingCameraEntity,
+    preset: TestVideoPreset,
+    by: string
+  ): Promise<void> {
+    const type = E.RegionTypeEnum[preset.region.type];
+    const points = preset.region.points.map(p => ({
+      x: Math.round((p.x * camera.width) / preset.width),
+      y: Math.round((p.y * camera.height) / preset.height)
+    }));
+    if (!type || regionProblem(type, points, camera.width, camera.height)) return;
+    await this.regionRepo.$saveForCamera(camera.id, type, points, by);
   }
 
   async update(
@@ -78,10 +194,26 @@ export class CountingService {
   ): Promise<CountingCameraEntity> {
     const camera = await this.camera(input.id, viewer);
     this.checkClasses(input.classes);
-    if (isWarehouse(viewer) && input.warehouseId !== undefined && input.warehouseId !== viewer.id) {
-      throw new ForbiddenException('A warehouse cannot give its camera to another warehouse.');
+    if (input.model !== undefined && input.model !== camera.model) this.checkModel(input.model);
+    const asked = askedWarehouses(input);
+    const warehouses: Partial<ReturnType<typeof withWarehouses>> = asked
+      ? withWarehouses(this.changedWarehouses(camera, asked, viewer))
+      : {};
+    const { id, warehouseId: _one, warehouseIds: _all, startTime, endTime, ...changes } = input;
+    // A schedule changes as a whole: the time not sent stays as it was.
+    const times =
+      startTime !== undefined || endTime !== undefined
+        ? schedule(
+            startTime === undefined ? camera.startTime : startTime,
+            endTime === undefined ? camera.endTime : endTime
+          )
+        : {};
+    if (changes.sourceUrl !== undefined || asked) {
+      const url = changes.sourceUrl ?? camera.sourceUrl;
+      const ids = warehouses.warehouseIds ?? camera.warehouseIds;
+      await this.checkSameStream(url, ids, id);
+      await this.checkOneNetworkCamera(url, ids, id);
     }
-    const { id, ...changes } = input;
     const sizeChanged =
       (changes.width !== undefined && changes.width !== camera.width) ||
       (changes.height !== undefined && changes.height !== camera.height);
@@ -101,14 +233,17 @@ export class CountingService {
     const saved = await this.cameraRepo.save({
       ...camera,
       ...changes,
+      ...times,
+      ...warehouses,
       name: changes.name?.trim() ?? camera.name
     });
 
-    // The stream itself changed: restart; only the detection settings: update the running worker.
-    const streamChanged = ['sourceUrl', 'fps', 'width', 'height', 'loop'].some(
+    // The stream or the detector changed: restart; only the detection settings: update the running worker.
+    // Off, or outside its schedule now: stopped (the schedule starts it again at its start time).
+    const streamChanged = ['sourceUrl', 'fps', 'width', 'height', 'loop', 'model'].some(
       key => (changes as any)[key] !== undefined && (changes as any)[key] !== (camera as any)[key]
     );
-    if (!saved.enabled) await this.manager.stop(id);
+    if (!saved.enabled || !this.manager.inScheduleNow(saved)) await this.manager.stop(id);
     else if (!this.manager.isRunning(id)) await this.manager.start(saved);
     else if (streamChanged) await this.manager.restart(saved);
     else this.manager.update(id, { conf: saved.confThreshold, classes: saved.classes });
@@ -351,8 +486,17 @@ export class CountingService {
       loaded: this.inference.modelLoaded,
       error: this.inference.modelError ?? undefined,
       provider: this.inference.provider,
-      classes: this.classes()
+      classes: this.classes(),
+      platform: this.inference.platformAvailable
     };
+  }
+
+  /** A camera set to run on Ultralytics Platform needs it set up on this service. */
+  private checkModel(model?: string | null): void {
+    if (model === PLATFORM_MODEL && !this.inference.platformAvailable)
+      throw new BadRequestException(
+        'Ultralytics Platform is not set up on the counting service: set ULTRALYTICS_ENDPOINT_URL and ULTRALYTICS_API_KEY in its .env.'
+      );
   }
 
   private checkClasses(classes?: number[]): void {
@@ -373,4 +517,32 @@ export const MANUAL_TAPPED = 'tapped';
 function dayStart(at: Date): Date {
   const offset = 7 * 3600e3;
   return new Date(Math.floor((at.getTime() + offset) / 86_400_000) * 86_400_000 - offset);
+}
+
+/** The warehouses an input asks for, once each (warehouseIds, else the one warehouseId); none asked: undefined. */
+function askedWarehouses(input: {
+  warehouseId?: string;
+  warehouseIds?: string[];
+}): string[] | undefined {
+  const ids =
+    input.warehouseIds ?? (input.warehouseId !== undefined ? [input.warehouseId] : undefined);
+  return ids && [...new Set(ids.map(w => w.trim()).filter(Boolean))];
+}
+
+/** Both columns: the list, and its first for the clients from before. */
+function withWarehouses(ids: string[]): { warehouseIds: string[]; warehouseId: string | null } {
+  return { warehouseIds: ids, warehouseId: ids[0] ?? null };
+}
+
+/** A camera's schedule: a start and an end (not the same time), or neither (all day). */
+function schedule(
+  startTime: string | null,
+  endTime: string | null
+): { startTime: string | null; endTime: string | null } {
+  if (!startTime && !endTime) return { startTime: null, endTime: null };
+  if (!startTime || !endTime)
+    throw new BadRequestException('A schedule needs both a start and an end time.');
+  if (startTime === endTime)
+    throw new BadRequestException('The start and end of a schedule must differ.');
+  return { startTime, endTime };
 }

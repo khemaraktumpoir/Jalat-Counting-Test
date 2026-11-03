@@ -30,8 +30,11 @@ export class ConfigDto {
   MODEL_PROVIDER?: string;
 
   /**
-   * CPU threads one camera's model may use (0 or unset: all cores). On a small server: cores ÷
-   * cameras, e.g. 1 on 1 vCPU, 2 on 4 vCPU with 2 cameras.
+   * CPU threads one copy of the model may use (0 or unset: all cores): each model worker of the
+   * pool (MODEL_WORKERS), and the photo counter's worker. On a server: cores ÷ (MODEL_WORKERS + 1
+   * for photos), e.g. 1 on 1-2 vCPU, 3 on 8 vCPU. Unset on a busy server: every copy takes every
+   * core and they slow each other. With MODEL_WORKERS=0 each camera has its own copy: cores ÷
+   * (cameras + 1).
    */
   @IsOptional()
   @IsNumber()
@@ -40,10 +43,44 @@ export class ConfigDto {
   @Transform(x => +x.value)
   MODEL_THREADS?: number;
 
+  /**
+   * Model workers per model, shared by the cameras (one copy of the model each, however many
+   * cameras): 1 by default; 2 or more on a big server when one cannot keep up; 0 = no pool, a
+   * copy in every camera (the old way).
+   */
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Max(16)
+  @Transform(x => +x.value)
+  MODEL_WORKERS?: number;
+
+  /**
+   * Most frames of different cameras one model run may take together; 4 by default. Only used
+   * when the model was exported with a dynamic batch (else one at a time); 1 = never batch.
+   */
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  @Max(16)
+  @Transform(x => +x.value)
+  MODEL_BATCH?: number;
+
   /** MODEL_PATH=ultralytics:<endpoint url>: the Ultralytics Platform API key. */
   @IsOptional()
   @IsString()
   ULTRALYTICS_API_KEY?: string;
+
+  /**
+   * A model on Ultralytics Platform for chosen cameras: its dedicated endpoint
+   * (https://….run.app/predict) or the shared one (…/api/models/<owner>/<project>/<model>/predict,
+   * 20 requests a minute: tests only). Set with ULTRALYTICS_API_KEY, a camera can be set to run on it
+   * (camera model "ultralytics": the warehouse app's camera settings → Where the model runs); the
+   * others keep MODEL_PATH. The service still reads the camera and counts: only frames go out.
+   */
+  @IsOptional()
+  @IsString()
+  ULTRALYTICS_ENDPOINT_URL?: string;
 
   /** Frames a second read from a camera that has none of its own. */
   @IsOptional()
@@ -63,7 +100,7 @@ export class ConfigDto {
 
   /**
    * Folders a photo-folder count may read, comma separated, relative to the service's folder or
-   * absolute; unset = photos,samples. Nothing outside them can be read.
+   * absolute; unset = photos,test-videos. Nothing outside them can be read.
    */
   @IsOptional()
   @IsString()
@@ -110,6 +147,27 @@ export class ConfigDto {
   @Max(365)
   @Transform(x => +x.value)
   PHOTO_DUP_DAYS?: number;
+
+  /** Photos that may wait to be counted (all users); past it the API answers 429. 60 by default. */
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  @Max(10000)
+  @Transform(x => +x.value)
+  PHOTO_QUEUE_MAX?: number;
+
+  /** Photos one user may have waiting; past it 429 (other users still get their turn). 20 by default. */
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  @Max(10000)
+  @Transform(x => +x.value)
+  PHOTO_QUEUE_PER_USER?: number;
+
+  /** "off": count photos in the API's own thread instead of a worker thread (to debug). */
+  @IsOptional()
+  @IsString()
+  PHOTO_WORKER?: string;
 
   /** ffmpeg to read the cameras with; unset = the one bundled by ffmpeg-static. */
   @IsOptional()

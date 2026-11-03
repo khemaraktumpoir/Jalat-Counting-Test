@@ -1,3 +1,5 @@
+import type { MessagePort } from 'worker_threads';
+
 import type { Counts, RegionShape } from '@lib/counting';
 
 /** What a camera worker needs to start (workerData). */
@@ -13,6 +15,8 @@ export interface CameraWorkerData {
   region: RegionShape | null;
   labels: Record<number, string>;
   modelPath: string;
+  /** The model runs in the model pool (model-pool.ts): its port comes as a 'model' message. */
+  pooled: boolean;
   provider: string;
   /** CPU threads for the model (MODEL_THREADS); 0 = all cores. */
   threads: number;
@@ -32,6 +36,8 @@ export type ToWorker =
   | { type: 'preview'; on: boolean }
   /** A phone camera ("phone:"): one JPEG the warehouse app sent. */
   | { type: 'frame'; jpeg: Uint8Array }
+  /** Pooled: the port to its model worker (again after that worker restarted). */
+  | { type: 'model'; port: MessagePort }
   | { type: 'stop' };
 
 /** Worker → main thread. */

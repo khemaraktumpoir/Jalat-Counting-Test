@@ -1,6 +1,6 @@
 /**
  * Saves still frames for labelling a parcel dataset, one JPEG every `--every` seconds, into
- * training/datasets/parcels/unlabeled.
+ * ../Jalat-Ultralytics-Service/datasets/parcels/unlabeled (the training kit, next to this service).
  *
  * From a camera of the service (the usual way): through its API, GET
  * /api/v1/counting/cameras/:id/snapshot — the same frame the camera page shows, whatever the
@@ -143,7 +143,9 @@ async function main(): Promise<void> {
   const minutes = Number(option(argv, 'minutes') ?? 10);
   const stamp = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '');
   const prefix = option(argv, 'prefix') ?? (cameraId ? `${cameraId.slice(0, 8)}_${stamp}` : stamp);
-  const out = resolve(option(argv, 'out') ?? 'training/datasets/parcels/unlabeled');
+  const out = resolve(
+    option(argv, 'out') ?? '../Jalat-Ultralytics-Service/datasets/parcels/unlabeled'
+  );
   mkdirSync(out, { recursive: true });
 
   const opts = { every, minutes, out, prefix };

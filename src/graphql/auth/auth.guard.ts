@@ -75,7 +75,7 @@ export class GqlAuthGuard implements CanActivate {
   /**
    * What this account may do here. No role (warehouses, Operation, as before roles): everything.
    * A role: its COUNTING:* codes from the User Service's role cache in the shared Redis (written
-   * when the role is saved, or by scripts/seed-counter-role.ts); a full role: everything; a role
+   * when the role is saved, or by scripts/seed-warehouse-roles.ts); a full role: everything; a role
    * not in the cache: nothing (save it again in the admin panel to cache it).
    */
   private async countingPermissions(user: JWTPayload): Promise<C.CountingPermission[]> {

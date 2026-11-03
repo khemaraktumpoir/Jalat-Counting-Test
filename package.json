@@ -20,9 +20,11 @@
     "model:inspect": "ts-node -r tsconfig-paths/register scripts/inspect-model.ts",
     "model:bench": "ts-node -r tsconfig-paths/register scripts/bench-model.ts",
     "model:try": "ts-node -r tsconfig-paths/register scripts/try-model.ts",
+    "video:count": "ts-node -r tsconfig-paths/register scripts/count-video.ts",
     "frames:grab": "ts-node -r tsconfig-paths/register scripts/grab-frames.ts",
     "db:seed": "ts-node -r tsconfig-paths/register scripts/seed.ts",
-    "role:seed": "ts-node scripts/seed-counter-role.ts"
+    "pc-camera": "ts-node -r tsconfig-paths/register scripts/pc-camera.ts",
+    "role:seed": "ts-node scripts/seed-warehouse-roles.ts"
   },
   "lint-staged": {
     "src/**/*.ts": [

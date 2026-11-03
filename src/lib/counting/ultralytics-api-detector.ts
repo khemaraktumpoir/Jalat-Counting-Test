@@ -12,6 +12,9 @@ import type { Detection, Frame } from './types';
  */
 export const ULTRALYTICS_MODEL_PREFIX = 'ultralytics:';
 
+/** A camera's model "ultralytics": it runs on the Platform endpoint ULTRALYTICS_ENDPOINT_URL. */
+export const PLATFORM_MODEL = 'ultralytics';
+
 export const isUltralyticsModel = (modelPath: string) =>
   modelPath.trim().toLowerCase().startsWith(ULTRALYTICS_MODEL_PREFIX);
 

@@ -7,28 +7,30 @@ import { CountingPipeline } from './pipeline';
 import { Frame } from './types';
 
 /**
- * The whole pipeline on samples/conveyor-synthetic.mp4 (ffmpeg → demo detector → tracker → line),
- * against a count made by hand from the video's own formula: two boxes move down the belt at
- * 150 px/s on a 900 px cycle; their centers cross y = 360 at t ≈ 3.2, 9.2, 15.2 s (the big one)
- * and t ≈ 0.2, 6.2, 12.2, 18.2 s (the small one): 7 parcels IN, none OUT, in 20 s.
+ * The whole pipeline on test-videos/warehouse-zone-by-hand.mp4 (ffmpeg → demo detector → tracker →
+ * zone), against the video's own script: a worker carries 9 orange parcels one by one from a pile
+ * into the zone taped on the floor and leaves them there (in at about 5, 14, 25, 33, 40, 50, 59, 66
+ * and 73 s): 9 parcels IN, none OUT, in 80 s. The worker (navy, dark gloves, white helmet) and the
+ * brown stock are not orange: not counted.
  */
 describe('sample video, end to end', () => {
-  it('counts the 7 parcels crossing the line', async () => {
-    const frame = (f: Frame) => f;
+  it('counts the 9 parcels carried into the zone', async () => {
     const pipeline = new CountingPipeline(new ColorDetector(), {
       conf: 0.4,
       labels: { 0: 'parcel' },
-      // Across the belt, drawn right → left: IN is downwards.
+      // The zone taped on the floor (yarn db:seed's "Sample zone").
       region: {
-        type: 'LINE',
+        type: 'POLYGON',
         points: [
-          { x: 960, y: 360 },
-          { x: 320, y: 360 }
+          { x: 440, y: 200 },
+          { x: 880, y: 200 },
+          { x: 880, y: 560 },
+          { x: 440, y: 560 }
         ]
       }
     });
     const source = new FrameSource({
-      url: join(__dirname, '../../../samples/conveyor-synthetic.mp4'),
+      url: join(__dirname, '../../../test-videos/warehouse-zone-by-hand.mp4'),
       fps: 10,
       width: 1280,
       height: 720,
@@ -37,19 +39,18 @@ describe('sample video, end to end', () => {
     });
     const frames: Frame[] = [];
     await new Promise<void>((resolve, reject) => {
-      source.on('frame', (f: Frame) => frames.push(frame(f)));
+      source.on('frame', (f: Frame) => frames.push(f));
       source.on('end', ({ error }: { error?: string }) =>
         error ? reject(new Error(error)) : resolve()
       );
       source.start();
     });
-    expect(frames.length).toBeGreaterThanOrEqual(195);
+    expect(frames.length).toBeGreaterThanOrEqual(790);
 
     let last;
     for (const f of frames) last = await pipeline.process(f);
-    // Within one of the hand count (a crossing in the last frames may not have been seen yet).
-    expect(Math.abs(last!.in - 7)).toBeLessThanOrEqual(1);
+    expect(last!.in).toBe(9);
     expect(last!.out).toBe(0);
-    expect(last!.byClass.parcel.in).toBe(last!.in);
-  }, 60_000);
+    expect(last!.byClass.parcel.in).toBe(9);
+  }, 120_000);
 });

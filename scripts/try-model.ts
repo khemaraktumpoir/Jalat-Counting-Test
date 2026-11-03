@@ -12,7 +12,7 @@
  *                     default: across the middle, drawn right → left (IN is downwards)
  * --conf 0.4          minimum score;  --classes 0,2  only these class ids
  */
-import { existsSync, readFileSync } from 'fs';
+import { existsSync } from 'fs';
 import { resolve } from 'path';
 
 import { C } from '@common';
@@ -24,7 +24,7 @@ import {
   DetectorLike,
   Frame
 } from '@lib/counting';
-import { FrameSource, loadOnnxModel, resolveFfmpeg } from '@lib/inference';
+import { foldClasses, FrameSource, loadLabels, loadOnnxModel, resolveFfmpeg } from '@lib/inference';
 
 const WIDTH = 1280;
 const HEIGHT = 720;
@@ -34,19 +34,13 @@ function option(argv: string[], name: string): string | undefined {
   return at >= 0 ? argv[at + 1] : undefined;
 }
 
-function labelsOf(path: string): Record<number, string> {
-  if (!existsSync(path)) return {};
-  const list = JSON.parse(readFileSync(path, 'utf8')) as string[];
-  return Object.fromEntries(list.map((label, i) => [i, label]));
-}
-
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const [modelArg, videoArg] = argv.filter(
     (a, i) => !a.startsWith('--') && !(i > 0 && argv[i - 1].startsWith('--'))
   );
   const modelPath = modelArg || 'models/yolo26n.onnx';
-  const video = resolve(videoArg || 'samples/conveyor-synthetic.mp4');
+  const video = resolve(videoArg || 'test-videos/warehouse-zone-by-hand.mp4');
   const [x1, y1, x2, y2] = (option(argv, 'line') ?? `${WIDTH * 0.75},360,${WIDTH * 0.25},360`)
     .split(',')
     .map(Number);
@@ -60,8 +54,10 @@ async function main(): Promise<void> {
     labels = { 0: 'parcel' };
   } else {
     const model = await loadOnnxModel(resolve(modelPath), 'cpu');
-    detector = new Detector(model.infer, C.MODEL_INPUT_SIZE);
-    labels = labelsOf(resolve(option(argv, 'labels') ?? 'models/classes.json'));
+    const labelsPath = resolve(option(argv, 'labels') ?? 'models/classes.json');
+    labels = existsSync(labelsPath) ? loadLabels(labelsPath) : {};
+    // As the camera worker: classes sharing a label (the parcel model's words) count as one.
+    detector = new Detector(model.infer, C.MODEL_INPUT_SIZE, foldClasses(labels));
   }
 
   // Every detection the model makes, per class (to see what it thinks the parcels are).

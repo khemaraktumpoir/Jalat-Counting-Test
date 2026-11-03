@@ -22,7 +22,7 @@ endif
 
 PORT ?= 9096
 MODEL ?= models/yolo26n.onnx
-VIDEO ?= samples/conveyor-synthetic.mp4
+VIDEO ?= test-videos/warehouse-zone-by-hand.mp4
 EVERY ?= 2
 MINUTES ?= 10
 

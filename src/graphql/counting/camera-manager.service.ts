@@ -3,16 +3,26 @@ import {
   Logger,
   NotFoundException,
   OnApplicationBootstrap,
-  OnModuleDestroy
+  OnModuleDestroy,
+  Optional
 } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { join } from 'path';
 import { mergeByClass } from 'src/repositories/counting-snapshot.repository';
+import { IsNull, Not } from 'typeorm';
 import { Worker } from 'worker_threads';
 
 import { C, E } from '@common';
 import { CountingCameraEntity, CountingRegionEntity } from '@entities';
-import { Counts, RegionShape } from '@lib/counting';
+import {
+  Counts,
+  DEMO_LABELS,
+  DEMO_MODEL,
+  isUltralyticsModel,
+  PLATFORM_MODEL,
+  RegionShape,
+  ULTRALYTICS_MODEL_PREFIX
+} from '@lib/counting';
 import { grabJpeg, isManualSource, isPhoneSource } from '@lib/inference';
 import { MQTTService } from '@lib/mqtt';
 import {
@@ -22,7 +32,9 @@ import {
 } from '@repositories';
 
 import { CameraWorkerData, FromWorker, ToWorker } from './camera-worker.protocol';
+import { inSchedule, timeOfDay } from './counting.rules';
 import { InferenceService } from './inference.service';
+import { ModelPool } from './model-pool';
 
 export interface CameraRuntime {
   status: E.CameraRunStatusEnum;
@@ -35,6 +47,8 @@ export interface CameraRuntime {
 
 interface Running {
   worker: Worker;
+  /** Pooled: lets its model worker go. */
+  release?: () => void;
   status: E.CameraRunStatusEnum;
   fps: number;
   error: string | null;
@@ -50,6 +64,14 @@ interface Running {
 }
 
 const zero = (): Counts => ({ in: 0, out: 0, byClass: {} });
+/** A camera not running, as its status says it (the status carries no counts). */
+const STOPPED: CameraRuntime = {
+  status: E.CameraRunStatusEnum.STOPPED,
+  fps: 0,
+  error: null,
+  counts: zero(),
+  updatedAt: null
+};
 const sum = (...parts: Counts[]): Counts => {
   const total = zero();
   for (const p of parts) {
@@ -87,10 +109,14 @@ export class CameraManagerService implements OnApplicationBootstrap, OnModuleDes
     private readonly regionRepo: CountingRegionRepository,
     private readonly snapshotRepo: CountingSnapshotRepository,
     private readonly inference: InferenceService,
-    private readonly mqtt: MQTTService
+    private readonly mqtt: MQTTService,
+    @Optional() private readonly pool?: ModelPool
   ) {}
 
-  /** Enabled cameras start with the service. */
+  /**
+   * Enabled cameras start with the service (a scheduled one only inside its hours, see
+   * applySchedules); then every camera's status goes out (see publishAll).
+   */
   async onApplicationBootstrap(): Promise<void> {
     const cameras = await this.cameraRepo.find({ where: { enabled: true } });
     for (const camera of cameras) {
@@ -98,20 +124,65 @@ export class CameraManagerService implements OnApplicationBootstrap, OnModuleDes
         this.logger.error(`${camera.name}: ${error.message}`)
       );
     }
+    this.mqtt.client.on('connect', () => void this.publishAll());
+    await this.publishAll();
+  }
+
+  /**
+   * Every camera's status as it is now, on each connection to MQTT. The broker keeps a camera's last
+   * status: a RUNNING left by a service that stopped before its STOPPED went out (a restart, a
+   * crash) or sent while the broker was away would show a stopped camera as counting in the app.
+   */
+  async publishAll(): Promise<void> {
+    if (!this.mqtt.client.connected) return;
+    try {
+      const cameras = await this.cameraRepo.find({ select: { id: true, sourceUrl: true } });
+      for (const { id, sourceUrl } of cameras) {
+        if (isManualSource(sourceUrl)) continue; // a manual counter has no run status
+        const run = this.running.get(id);
+        this.publishStatus(id, run ? this.runtimeOf(run) : STOPPED);
+      }
+    } catch (error: any) {
+      this.logger.warn(`Camera statuses not sent: ${error.message}`);
+    }
   }
 
   async onModuleDestroy(): Promise<void> {
     await Promise.all([...this.running.keys()].map(id => this.stop(id)));
+    await this.pool?.close();
   }
 
   isRunning(cameraId: string): boolean {
     return this.running.has(cameraId);
   }
 
+  /** Whether the camera may count now: always without a schedule, else inside its hours (C.TIME_ZONE). */
+  inScheduleNow(camera: Pick<CountingCameraEntity, 'startTime' | 'endTime'>): boolean {
+    return inSchedule(camera, timeOfDay(new Date(), C.TIME_ZONE));
+  }
+
   async start(camera: CountingCameraEntity): Promise<void> {
     // A manual counter has nothing to run: its counts come from addManualCount.
     if (this.running.has(camera.id) || isManualSource(camera.sourceUrl)) return;
+    // Outside its hours: it stays on (enabled) and applySchedules starts it at its start time.
+    if (!this.inScheduleNow(camera)) return this.publishStatus(camera.id, STOPPED);
+    // Set to run on Ultralytics Platform but it is not set up (any more): say so, do not start.
+    if (camera.model === PLATFORM_MODEL && !this.inference.platformAvailable)
+      return this.publishStatus(camera.id, {
+        ...STOPPED,
+        status: E.CameraRunStatusEnum.ERROR,
+        error:
+          'This camera runs on Ultralytics Platform, which is not set up on the counting service (ULTRALYTICS_ENDPOINT_URL, ULTRALYTICS_API_KEY).'
+      });
     const region = await this.regionRepo.findOne({ where: { cameraId: camera.id } });
+    // The camera's own detector: demo:orange, the Platform endpoint ("ultralytics"); else MODEL_PATH.
+    const modelPath =
+      camera.model === PLATFORM_MODEL
+        ? `${ULTRALYTICS_MODEL_PREFIX}${this.inference.platformUrl}`
+        : camera.model || this.inference.modelPath;
+    // An ONNX model runs in the model pool (one copy for all its cameras); the others in the camera.
+    const pooled =
+      !!this.pool?.enabled && modelPath !== DEMO_MODEL && !isUltralyticsModel(modelPath);
     const data: CameraWorkerData = {
       cameraId: camera.id,
       sourceUrl: camera.sourceUrl,
@@ -122,8 +193,10 @@ export class CameraManagerService implements OnApplicationBootstrap, OnModuleDes
       conf: camera.confThreshold,
       classes: camera.classes ?? [],
       region: regionShapeOf(region),
-      labels: this.inference.labels,
-      modelPath: this.inference.modelPath,
+      // The camera's own detector (demo:orange for the test videos), else the service's model.
+      labels: camera.model === DEMO_MODEL ? DEMO_LABELS : this.inference.labels,
+      modelPath,
+      pooled,
       provider: this.inference.provider,
       threads: this.inference.threads,
       apiKey: this.inference.apiKey,
@@ -145,11 +218,17 @@ export class CameraManagerService implements OnApplicationBootstrap, OnModuleDes
       previewListeners: new Set()
     };
     this.running.set(camera.id, run);
+    if (pooled)
+      run.release = this.pool!.connect(
+        { path: modelPath, provider: data.provider, threads: data.threads },
+        port => worker.postMessage({ type: 'model', port } satisfies ToWorker, [port])
+      );
     worker.on('message', (message: FromWorker) => this.onMessage(camera.id, run, message));
     worker.on('error', error =>
       this.setStatus(camera.id, run, E.CameraRunStatusEnum.ERROR, error.message)
     );
     worker.on('exit', code => {
+      run.release?.();
       if (this.running.get(camera.id) !== run) return;
       // The worker died on its own (not stop()): save what it counted, say so.
       void this.flush(camera.id, run);
@@ -165,10 +244,13 @@ export class CameraManagerService implements OnApplicationBootstrap, OnModuleDes
 
   async stop(cameraId: string): Promise<void> {
     const run = this.running.get(cameraId);
-    if (!run) return;
+    // Not running here: still say so. MQTT keeps a camera's last status, which may be an old
+    // RUNNING (the service stopped before its STOPPED went out); Stop in the app clears it.
+    if (!run) return this.publishStatus(cameraId, STOPPED);
     this.running.delete(cameraId);
     await this.flush(cameraId, run);
     this.send(run, { type: 'stop' });
+    run.release?.();
     setTimeout(() => void run.worker.terminate(), 3000).unref();
     this.publishStatus(cameraId, {
       status: E.CameraRunStatusEnum.STOPPED,
@@ -302,6 +384,32 @@ export class CameraManagerService implements OnApplicationBootstrap, OnModuleDes
     for (const [cameraId, run] of this.running) await this.flush(cameraId, run);
   }
 
+  /**
+   * Every minute: each enabled camera with a schedule is started at its start time and stopped at its
+   * end (it stays enabled, so it starts again the next day). Stop in the app turns it off for good.
+   */
+  @Cron('* * * * *')
+  async applySchedules(): Promise<void> {
+    let cameras: CountingCameraEntity[];
+    try {
+      cameras = await this.cameraRepo.find({ where: { enabled: true, startTime: Not(IsNull()) } });
+    } catch (error: any) {
+      return this.logger.warn(`Schedules not checked: ${error.message}`);
+    }
+    for (const camera of cameras) {
+      const due = this.inScheduleNow(camera);
+      if (due === this.running.has(camera.id)) continue;
+      this.logger.log(
+        `${camera.name}: ${due ? 'started' : 'stopped'} by its schedule (${camera.startTime}–${
+          camera.endTime
+        }).`
+      );
+      await (due ? this.start(camera) : this.stop(camera.id)).catch(error =>
+        this.logger.error(`${camera.name}: ${error.message}`)
+      );
+    }
+  }
+
   private async flush(cameraId: string, run: Running): Promise<void> {
     const delta = minus(run.live, run.saved);
     if (!delta.in && !delta.out) return;
@@ -315,6 +423,10 @@ export class CameraManagerService implements OnApplicationBootstrap, OnModuleDes
   }
 
   private onMessage(cameraId: string, run: Running, message: FromWorker): void {
+    // A stopped camera's worker lives on up to 3 s (stop()): its last status or count must not
+    // publish RUNNING over the retained STOPPED (the app then showed Stop on a stopped camera).
+    // A snapshot it still answers is fine: someone is waiting for it.
+    if (this.running.get(cameraId) !== run && message.type !== 'snapshot') return;
     switch (message.type) {
       case 'status':
         run.fps = message.fps;

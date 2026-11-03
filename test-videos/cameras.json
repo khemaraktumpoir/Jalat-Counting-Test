@@ -1,0 +1,389 @@
+[
+  {
+    "name": "Zone A – floor (example)",
+    "warehouse": "TEST WH 66",
+    "warehouseId": "6a465e96-6ecb-b088-7f03-2830bc50ee80",
+    "about": "Example IP camera: replace the IP, set CAM_ZONE_A_PASSWORD in .env, then yarn db:seed. Draw its area on the live picture in the app.",
+    "camera": {
+      "brand": "hikvision",
+      "host": "192.168.1.64",
+      "channel": 1,
+      "stream": "sub",
+      "password": "${CAM_ZONE_A_PASSWORD}"
+    },
+    "fps": 10,
+    "confThreshold": 0.4,
+    "width": 640,
+    "height": 360
+  },
+  {
+    "name": "PC webcam",
+    "warehouse": "TEST WH 66",
+    "warehouseId": "6a465e96-6ecb-b088-7f03-2830bc50ee80",
+    "about": "This PC's webcam as a network camera, through the local relay: run `yarn pc-camera` and leave it open, then start this camera in the app. Hold a parcel up and move it across the line in the middle.",
+    "camera": {
+      "brand": "go2rtc",
+      "host": "go2rtc",
+      "channel": 2,
+      "stream": "sub"
+    },
+    "fps": 5,
+    "confThreshold": 0.4,
+    "width": 640,
+    "height": 360,
+    "region": {
+      "type": "LINE",
+      "points": [
+        {
+          "x": 320,
+          "y": 20
+        },
+        {
+          "x": 320,
+          "y": 340
+        }
+      ]
+    }
+  },
+  {
+    "name": "Sample zone",
+    "warehouse": "TEST WH 66",
+    "warehouseId": "6a465e96-6ecb-b088-7f03-2830bc50ee80",
+    "sourceUrl": "test-videos/warehouse-zone-by-hand.mp4",
+    "about": "A worker carries 9 parcels by hand from a pile into a zone taped on a warehouse floor, one at a time.",
+    "fps": 10,
+    "confThreshold": 0.4,
+    "width": 1280,
+    "height": 720,
+    "loop": true,
+    "model": "demo:orange",
+    "region": {
+      "type": "POLYGON",
+      "points": [
+        {
+          "x": 440,
+          "y": 200
+        },
+        {
+          "x": 880,
+          "y": 200
+        },
+        {
+          "x": 880,
+          "y": 560
+        },
+        {
+          "x": 440,
+          "y": 560
+        }
+      ]
+    },
+    "expected": {
+      "in": 9,
+      "out": 0
+    }
+  },
+  {
+    "name": "Scan desk tray",
+    "warehouse": "TEST WH 66",
+    "warehouseId": "6a465e96-6ecb-b088-7f03-2830bc50ee80",
+    "sourceUrl": "test-videos/scan-station-basket.mp4",
+    "about": "A worker scans parcels from a basket with a USB scanner and puts them in a done tray (the zone); one goes in unscanned: the camera counts 8, the scanner 7.",
+    "fps": 10,
+    "confThreshold": 0.4,
+    "width": 1280,
+    "height": 720,
+    "loop": true,
+    "model": "demo:orange",
+    "region": {
+      "type": "POLYGON",
+      "points": [
+        {
+          "x": 912,
+          "y": 312
+        },
+        {
+          "x": 1138,
+          "y": 312
+        },
+        {
+          "x": 1138,
+          "y": 588
+        },
+        {
+          "x": 912,
+          "y": 588
+        }
+      ]
+    },
+    "expected": {
+      "in": 8,
+      "out": 0
+    }
+  },
+  {
+    "name": "Belt stream zone",
+    "warehouse": "TEST WH 66",
+    "warehouseId": "6a465e96-6ecb-b088-7f03-2830bc50ee80",
+    "sourceUrl": "test-videos/belt-stream-zone.mp4",
+    "about": "A busy diagonal belt (185 parcels in 60 s) through a zone on the belt: each parcel IN going in, OUT going out.",
+    "fps": 10,
+    "confThreshold": 0.4,
+    "width": 1280,
+    "height": 720,
+    "loop": true,
+    "model": "demo:orange",
+    "region": {
+      "type": "POLYGON",
+      "points": [
+        {
+          "x": 805,
+          "y": 471
+        },
+        {
+          "x": 566,
+          "y": 181
+        },
+        {
+          "x": 365,
+          "y": 346
+        },
+        {
+          "x": 604,
+          "y": 636
+        }
+      ]
+    },
+    "expected": {
+      "in": 164,
+      "out": 156
+    }
+  },
+  {
+    "name": "Relay belt stream (go2rtc cam3)",
+    "warehouse": "TEST WH 66",
+    "warehouseId": "6a465e96-6ecb-b088-7f03-2830bc50ee80",
+    "about": "The busy belt video as a live network camera through the local relay (go2rtc cam3, looped): counts like a real IP camera, no webcam needed. Same counting area as Belt stream zone.",
+    "camera": {
+      "brand": "go2rtc",
+      "host": "go2rtc",
+      "channel": 3,
+      "stream": "sub"
+    },
+    "fps": 10,
+    "confThreshold": 0.4,
+    "width": 1280,
+    "height": 720,
+    "model": "demo:orange",
+    "region": {
+      "type": "POLYGON",
+      "points": [
+        {
+          "x": 805,
+          "y": 471
+        },
+        {
+          "x": 566,
+          "y": 181
+        },
+        {
+          "x": 365,
+          "y": 346
+        },
+        {
+          "x": 604,
+          "y": 636
+        }
+      ]
+    }
+  },
+  {
+    "name": "Warehouse unloading zone",
+    "warehouse": "TEST WH 66",
+    "warehouseId": "6a465e96-6ecb-b088-7f03-2830bc50ee80",
+    "sourceUrl": "test-videos/warehouse-unload-zone.mp4",
+    "about": "A truck unloaded onto a roller conveyor across a warehouse floor (the same stream as Belt stream zone): a zone on the conveyor.",
+    "fps": 10,
+    "confThreshold": 0.4,
+    "width": 1280,
+    "height": 720,
+    "loop": true,
+    "model": "demo:orange",
+    "region": {
+      "type": "POLYGON",
+      "points": [
+        {
+          "x": 805,
+          "y": 471
+        },
+        {
+          "x": 566,
+          "y": 181
+        },
+        {
+          "x": 365,
+          "y": 346
+        },
+        {
+          "x": 604,
+          "y": 636
+        }
+      ]
+    },
+    "expected": {
+      "in": 164,
+      "out": 156
+    }
+  },
+  {
+    "name": "Real parcels lane",
+    "warehouse": "TEST WH 66",
+    "warehouseId": "6a465e96-6ecb-b088-7f03-2830bc50ee80",
+    "sourceUrl": "test-videos/real-parcels-lane.mp4",
+    "about": "Real parcels from pickup photos (mailer bags of every colour, boxes, gift and shopping bags) slide one by one along a lane on a woven mat through a taped zone: 17 parcels, each IN going in and OUT going out. Counted with the service's parcel model (MODEL_PATH), not demo:orange.",
+    "fps": 10,
+    "confThreshold": 0.4,
+    "width": 1280,
+    "height": 720,
+    "loop": true,
+    "region": {
+      "type": "POLYGON",
+      "points": [
+        {
+          "x": 540,
+          "y": 150
+        },
+        {
+          "x": 760,
+          "y": 150
+        },
+        {
+          "x": 760,
+          "y": 570
+        },
+        {
+          "x": 540,
+          "y": 570
+        }
+      ]
+    },
+    "expected": {
+      "in": 17,
+      "out": 17
+    }
+  },
+  {
+    "name": "Chair, basket, scanner and zone",
+    "warehouse": "TEST WH 66",
+    "warehouseId": "6a465e96-6ecb-b088-7f03-2830bc50ee80",
+    "sourceUrl": "test-videos/chair-basket-zone.mp4",
+    "about": "A worker on a chair takes real parcels (mailer bags, boxes, gift bags) one by one from a red plastic basket, scans each with a handheld scanner and puts it down in a taped zone: 9 go in, 8 stay in the basket. One goes in unscanned: the camera counts 9, the scanner 8. Only parcels put in the zone count, not the arm reaching in, the scanner nor the parcels waiting in the basket. Counted with the service's parcel model (MODEL_PATH), not demo:orange.",
+    "fps": 10,
+    "confThreshold": 0.4,
+    "width": 1280,
+    "height": 720,
+    "loop": true,
+    "region": {
+      "type": "POLYGON",
+      "points": [
+        {
+          "x": 620,
+          "y": 90
+        },
+        {
+          "x": 930,
+          "y": 90
+        },
+        {
+          "x": 930,
+          "y": 390
+        },
+        {
+          "x": 620,
+          "y": 390
+        }
+      ]
+    },
+    "expected": {
+      "in": 9,
+      "out": 0
+    }
+  },
+  {
+    "name": "Remote camera test (channel 8)",
+    "warehouse": "TEST WH 66",
+    "warehouseId": "6a465e96-6ecb-b088-7f03-2830bc50ee80",
+    "about": "Remote Hikvision channel 8 main stream. Set CAM_REMOTE_TEST_PASSWORD in .env before seeding; use only with authorization and preferably over a VPN.",
+    "camera": {
+      "brand": "hikvision",
+      "host": "cab17.cellcard.com.kh",
+      "port": 554,
+      "channel": 8,
+      "stream": "main",
+      "password": "${CAM_REMOTE_TEST_PASSWORD}"
+    },
+    "fps": 10,
+    "confThreshold": 0.4,
+    "width": 1280,
+    "height": 720,
+    "enabled": false,
+    "region": {
+      "type": "POLYGON",
+      "points": [
+        {
+          "x": 620,
+          "y": 90
+        },
+        {
+          "x": 930,
+          "y": 90
+        },
+        {
+          "x": 930,
+          "y": 390
+        },
+        {
+          "x": 620,
+          "y": 390
+        }
+      ]
+    }
+  },
+  {
+    "name": "Relay chair, basket and scanner (go2rtc cam4)",
+    "warehouse": "TEST WH 66",
+    "warehouseId": "6a465e96-6ecb-b088-7f03-2830bc50ee80",
+    "about": "The chair, basket and scanner video as a live network camera through the local relay (go2rtc cam4, looped), like the PC webcam but with no webcam needed: a worker scans real parcels from a basket into a taped zone (9 in a loop, one unscanned). Same zone as Chair, basket, scanner and zone; counted with the service parcel model (MODEL_PATH).",
+    "camera": {
+      "brand": "go2rtc",
+      "host": "go2rtc",
+      "channel": 4,
+      "stream": "sub"
+    },
+    "fps": 10,
+    "confThreshold": 0.4,
+    "width": 1280,
+    "height": 720,
+    "region": {
+      "type": "POLYGON",
+      "points": [
+        {
+          "x": 620,
+          "y": 90
+        },
+        {
+          "x": 930,
+          "y": 90
+        },
+        {
+          "x": 930,
+          "y": 390
+        },
+        {
+          "x": 620,
+          "y": 390
+        }
+      ]
+    }
+  }
+]

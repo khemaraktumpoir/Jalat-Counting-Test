@@ -17,17 +17,39 @@ export interface FrameSourceOptions {
   ffmpegPath: string;
 }
 
-/** ffmpeg: the bundled one (ffmpeg-static) unless FFMPEG_PATH says otherwise. */
-export function resolveFfmpeg(configured?: string): string {
+/** The system's ffmpeg on Linux (the Docker image installs Debian's). */
+export const SYSTEM_FFMPEG = '/usr/bin/ffmpeg';
+
+/**
+ * ffmpeg: FFMPEG_PATH when set; else the system's (SYSTEM_FFMPEG) when there is one; else the one
+ * ffmpeg-static downloads (a Windows or macOS PC). The system's comes first because ffmpeg-static's
+ * Linux build is fully static and crashes (segfault) looking up a host name: a camera at
+ * rtsp://go2rtc:8554/cam1 or https://cloud…/live.m3u8 never opened, only IP addresses did.
+ */
+export function resolveFfmpeg(configured?: string, systemPath = SYSTEM_FFMPEG): string {
   if (configured) return configured;
+  if (existsSync(systemPath)) return systemPath;
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const bundled = require('ffmpeg-static') as string | null;
-  if (!bundled) throw new Error('No ffmpeg: install ffmpeg-static or set FFMPEG_PATH.');
+  if (!bundled || !existsSync(bundled))
+    throw new Error(
+      'No ffmpeg: install one (apt install ffmpeg), or ffmpeg-static, or set FFMPEG_PATH.'
+    );
   return bundled;
 }
 
 /** A network camera (rtsp://, http://…), not a video file. */
 export const isStream = (url: string) => /^(rtsp|rtmp|http|https|udp|tcp):\/\//i.test(url);
+
+/**
+ * A phone's IP-camera app on the Wi-Fi (IP Webcam http://<ip>:8080/video, DroidCam :4747/video), as
+ * the warehouse app sets it up: a stream, but a phone, not a network camera.
+ */
+export const isPhoneAppSource = (url: string) =>
+  /^http:\/\/(\d{1,3}\.){3}\d{1,3}:(8080|4747)\/video$/i.test(url.trim());
+
+/** A network (IP) camera: a stream address that is not a phone app. A warehouse has one. */
+export const isNetworkCamera = (url: string) => isStream(url.trim()) && !isPhoneAppSource(url);
 
 /**
  * A phone camera ("phone:"): no stream to open — the warehouse app sends the phone's camera frames
@@ -46,7 +68,7 @@ export const isManualSource = (url: string) => url.trim().toLowerCase().startsWi
 
 /**
  * A video file that is not there, said plainly (ffmpeg's own message for "C:\…" on Linux is "Did you
- * mean file:C:\…?"). A relative path is from the service's folder (samples/…); null when it is there
+ * mean file:C:\…?"). A relative path is from the service's folder (test-videos/…); null when it is there
  * or the source is a camera.
  */
 export function missingFileError(url: string): string | null {
@@ -54,7 +76,7 @@ export function missingFileError(url: string): string | null {
   const foreign = process.platform !== 'win32' && /^[a-z]:[\\/]/i.test(url);
   return `The video file is not there: ${url}${
     foreign
-      ? ' (a Windows path: use a path on this machine, or one from the service folder, e.g. samples/…)'
+      ? ' (a Windows path: use a path on this machine, or one from the service folder, e.g. test-videos/…)'
       : ''
   }`;
 }

@@ -1,17 +1,20 @@
 import { ArgsType, Field, Float, ID, InputType, Int } from '@nestjs/graphql';
 import { Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
   ArrayMinSize,
   IsArray,
   IsBoolean,
   IsDateString,
   IsEnum,
+  IsIn,
   IsInt,
   IsNotEmpty,
   IsNumber,
   IsOptional,
   IsString,
   IsUUID,
+  Matches,
   Max,
   MaxLength,
   Min,
@@ -19,6 +22,14 @@ import {
 } from 'class-validator';
 
 import { E } from '@common';
+import { DEMO_MODEL, PLATFORM_MODEL } from '@lib/counting';
+
+import { SCHEDULE_TIME } from './counting.rules';
+
+/** What a camera may use instead of the service's model (null: the service's). */
+const CAMERA_MODELS = [DEMO_MODEL, PLATFORM_MODEL];
+const MODEL_DESCRIPTION =
+  "demo:orange (the colour detector, for the synthetic test videos); ultralytics (the model on Ultralytics Platform, ULTRALYTICS_ENDPOINT_URL: countingModel.platform says whether it is set up); null = the service's model.";
 
 @InputType()
 export class CreateCountingCameraInput {
@@ -38,6 +49,23 @@ export class CreateCountingCameraInput {
   @IsOptional()
   @IsBoolean()
   enabled?: boolean;
+
+  @Field(() => String, {
+    nullable: true,
+    description:
+      'Counts from this time each day ("HH:mm", Asia/Phnom_Penh); null with endTime = all day.'
+  })
+  @IsOptional()
+  @Matches(SCHEDULE_TIME, { message: 'startTime is HH:mm (00:00-23:59).' })
+  startTime?: string | null;
+
+  @Field(() => String, {
+    nullable: true,
+    description: 'Stops at this time each day ("HH:mm"); before startTime = over midnight.'
+  })
+  @IsOptional()
+  @Matches(SCHEDULE_TIME, { message: 'endTime is HH:mm (00:00-23:59).' })
+  endTime?: string | null;
 
   @Field(() => Int, { nullable: true })
   @IsOptional()
@@ -78,13 +106,29 @@ export class CreateCountingCameraInput {
   @IsBoolean()
   loop?: boolean;
 
+  @Field(() => String, { nullable: true, description: MODEL_DESCRIPTION })
+  @IsOptional()
+  @IsIn(CAMERA_MODELS)
+  model?: string | null;
+
   @Field({
     nullable: true,
-    description: 'Operation / admin only: the mobile warehouse it belongs to.'
+    description: 'One mobile warehouse it belongs to (clients from before warehouseIds).'
   })
   @IsOptional()
   @IsString()
   warehouseId?: string;
+
+  @Field(() => [String], {
+    nullable: true,
+    description:
+      'The mobile warehouses it belongs to: Operation picks any; a Counter registered to several picks among them.'
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(50)
+  @IsString({ each: true })
+  warehouseIds?: string[];
 }
 
 @InputType()
@@ -110,6 +154,23 @@ export class UpdateCountingCameraInput {
   @IsBoolean()
   enabled?: boolean;
 
+  @Field(() => String, {
+    nullable: true,
+    description:
+      'Counts from this time each day ("HH:mm", Asia/Phnom_Penh); null with endTime = all day.'
+  })
+  @IsOptional()
+  @Matches(SCHEDULE_TIME, { message: 'startTime is HH:mm (00:00-23:59).' })
+  startTime?: string | null;
+
+  @Field(() => String, {
+    nullable: true,
+    description: 'Stops at this time each day ("HH:mm"); before startTime = over midnight.'
+  })
+  @IsOptional()
+  @Matches(SCHEDULE_TIME, { message: 'endTime is HH:mm (00:00-23:59).' })
+  endTime?: string | null;
+
   @Field(() => Int, { nullable: true })
   @IsOptional()
   @IsInt()
@@ -149,10 +210,26 @@ export class UpdateCountingCameraInput {
   @IsBoolean()
   loop?: boolean;
 
-  @Field({ nullable: true })
+  @Field(() => String, { nullable: true, description: MODEL_DESCRIPTION })
+  @IsOptional()
+  @IsIn(CAMERA_MODELS)
+  model?: string | null;
+
+  @Field({ nullable: true, description: 'One mobile warehouse: replaces all of them.' })
   @IsOptional()
   @IsString()
   warehouseId?: string;
+
+  @Field(() => [String], {
+    nullable: true,
+    description:
+      'The mobile warehouses it belongs to (Operation: any, [] = the hub; a warehouse or Counter: among its own).'
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(50)
+  @IsString({ each: true })
+  warehouseIds?: string[];
 }
 
 @InputType()
@@ -252,7 +329,7 @@ export class CountingOverviewArgs {
 export class PhotoFolderArgs {
   @Field({
     description:
-      'A folder on the counting service, inside PHOTO_ROOTS (default photos, samples): e.g. "photos/batch-21-10"'
+      'A folder on the counting service, inside PHOTO_ROOTS (default photos, test-videos): e.g. "photos/batch-21-10"'
   })
   @IsString()
   @IsNotEmpty()

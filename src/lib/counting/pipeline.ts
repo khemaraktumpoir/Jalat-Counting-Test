@@ -2,6 +2,7 @@ import { DetectOptions } from './detector';
 import { COLORS, drawBox, drawInArrow, drawPolyline } from './draw';
 import { LineCounter } from './line-counter';
 import { PolygonCounter } from './polygon-counter';
+import { tidyParcels } from './tidy';
 import { IouTracker, TrackerOptions } from './tracker';
 import { CountEvent, Counter, Counts, Detection, Frame, Point, Track } from './types';
 
@@ -16,7 +17,18 @@ export interface PipelineOptions extends DetectOptions, TrackerOptions {
   region: RegionShape;
   /** Class index → label (models/classes.json). */
   labels: Record<number, string>;
+  /**
+   * The parcel model's boxes tidied on every frame before tracking, as photos are (tidyParcels: no
+   * box round several parcels, no parcel boxed twice, no floor): one track per parcel.
+   */
+  tidy?: boolean;
 }
+
+/** Labels of the parcel model: every class is called "parcel" (its words for one thing, folded). */
+export const isParcelModel = (labels: Record<number, string>) => {
+  const names = Object.values(labels);
+  return names.length > 0 && names.every(name => name === 'parcel');
+};
 
 export interface PipelineResult {
   in: number;
@@ -52,7 +64,8 @@ export class CountingPipeline {
   private labelOf = (classId: number) => this.options.labels[classId] ?? `class ${classId}`;
 
   async process(frame: Frame): Promise<PipelineResult> {
-    const detections = await this.detector.detect(frame, this.options);
+    const found = await this.detector.detect(frame, this.options);
+    const detections = this.options.tidy ? tidyParcels(found, frame.width, frame.height) : found;
     const tracks = this.tracker.update(detections);
     const events = this.counter.update(tracks, this.labelOf);
     if (this.counter instanceof PolygonCounter || this.counter instanceof LineCounter) {

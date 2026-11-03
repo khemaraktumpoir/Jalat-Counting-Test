@@ -1,4 +1,5 @@
 import { E } from '@common';
+import { foldClasses } from '@lib/inference';
 
 export interface PointLike {
   x: number;
@@ -32,14 +33,45 @@ export function regionProblem(
   return null;
 }
 
-/** Labels as a sorted list (countingClasses). */
-export const classList = (labels: Record<number, string>) =>
-  Object.entries(labels)
+/** Labels as a sorted list (countingClasses); a label shared by several classes once, as its first (foldClasses). */
+export const classList = (labels: Record<number, string>) => {
+  const fold = foldClasses(labels);
+  return Object.entries(labels)
     .map(([id, label]) => ({ id: Number(id), label }))
+    .filter(({ id }) => fold[id] === undefined)
     .sort((a, b) => a.id - b.id);
+};
 
 /** { label: { in, out } } → [{ label, in, out }], biggest first. */
 export const byClassList = (byClass: Record<string, { in: number; out: number }>) =>
   Object.entries(byClass ?? {})
     .map(([label, v]) => ({ label, in: v.in, out: v.out }))
     .sort((a, b) => b.in + b.out - (a.in + a.out));
+
+/** "HH:mm", 00:00–23:59: a schedule's start or end time. */
+export const SCHEDULE_TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+/** The time of day now in the warehouses' time zone (C.TIME_ZONE), as "HH:mm". */
+export function timeOfDay(now: Date, timeZone: string): string {
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone,
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23'
+  }).format(now);
+}
+
+/**
+ * Whether a camera may count at `time` ("HH:mm"): always without a schedule (no start or end), else
+ * from its start up to (not at) its end; an end before the start runs over midnight (22:00–06:00).
+ */
+export function inSchedule(
+  schedule: { startTime?: string | null; endTime?: string | null },
+  time: string
+): boolean {
+  const { startTime, endTime } = schedule;
+  if (!startTime || !endTime || startTime === endTime) return true;
+  return startTime < endTime
+    ? time >= startTime && time < endTime
+    : time >= startTime || time < endTime;
+}

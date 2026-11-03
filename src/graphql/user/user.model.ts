@@ -1,7 +1,5 @@
 import { Field, ObjectType } from '@nestjs/graphql';
 
-import { Paginated } from '@common';
-
 @ObjectType()
 class Zone {
   @Field()
@@ -97,6 +95,3 @@ export class User {
   roleId?: number | null;
   permissions?: string[];
 }
-
-@ObjectType()
-export class PaginatedUser extends Paginated(User) {}

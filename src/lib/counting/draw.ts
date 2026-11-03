@@ -63,3 +63,36 @@ export function drawInArrow(frame: Frame, a: Point, b: Point, color: RGB): void 
   drawLine(frame, tip, { x: back.x + side.x, y: back.y + side.y }, color, 3);
   drawLine(frame, tip, { x: back.x - side.x, y: back.y - side.y }, color, 3);
 }
+
+/**
+ * A smaller copy of a frame, at most `maxWidth` wide: shrunk by a whole factor, each pixel the
+ * average of its block (lines drawn 2 px wide stay visible). The frame itself when already small
+ * enough. For the live preview, which does not need the camera's full size.
+ */
+export function shrinkFrame(frame: Frame, maxWidth: number): Frame {
+  const factor = Math.ceil(frame.width / maxWidth);
+  if (factor <= 1) return frame;
+  const width = Math.floor(frame.width / factor);
+  const height = Math.floor(frame.height / factor);
+  const data = new Uint8Array(width * height * 3);
+  const area = factor * factor;
+  for (let y = 0; y < height; y += 1)
+    for (let x = 0; x < width; x += 1) {
+      let r = 0;
+      let g = 0;
+      let b = 0;
+      for (let dy = 0; dy < factor; dy += 1) {
+        let i = ((y * factor + dy) * frame.width + x * factor) * 3;
+        for (let dx = 0; dx < factor; dx += 1, i += 3) {
+          r += frame.data[i];
+          g += frame.data[i + 1];
+          b += frame.data[i + 2];
+        }
+      }
+      const o = (y * width + x) * 3;
+      data[o] = Math.round(r / area);
+      data[o + 1] = Math.round(g / area);
+      data[o + 2] = Math.round(b / area);
+    }
+  return { data, width, height };
+}

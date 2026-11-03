@@ -8,3 +8,4 @@ export * from './draw';
 export * from './pipeline';
 export * from './color-detector';
 export * from './ultralytics-api-detector';
+export * from './tidy';

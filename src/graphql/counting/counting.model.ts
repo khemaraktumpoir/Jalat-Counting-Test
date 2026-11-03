@@ -82,6 +82,15 @@ export class CountingCamera {
   @Field()
   enabled!: boolean;
 
+  @Field(() => String, {
+    nullable: true,
+    description: 'Counts from this time each day ("HH:mm"); null with endTime = all day.'
+  })
+  startTime!: string | null;
+
+  @Field(() => String, { nullable: true, description: 'Stops at this time each day ("HH:mm").' })
+  endTime!: string | null;
+
   @Field(() => Int)
   fps!: number;
 
@@ -100,11 +109,22 @@ export class CountingCamera {
   @Field()
   loop!: boolean;
 
+  @Field(() => String, {
+    nullable: true,
+    description: "This camera's detector (demo:orange); null = the service's model."
+  })
+  model!: string | null;
+
   @Field({
     nullable: true,
-    description: 'The mobile warehouse (user id) it belongs to; null = Operation.'
+    description: 'The first of warehouseIds (clients from before); null = Operation.'
   })
   warehouseId?: string;
+
+  @Field(() => [String], {
+    description: 'The mobile warehouses (user ids) it belongs to; empty = Operation (the hub).'
+  })
+  warehouseIds!: string[];
 
   @Field(() => GraphQLISODateTime)
   countsResetAt!: Date;
@@ -162,6 +182,12 @@ export class CountingModelInfo {
 
   @Field(() => [CountingClass])
   classes!: CountingClass[];
+
+  @Field({
+    description:
+      'Cameras can be set to run on Ultralytics Platform (camera model "ultralytics"): ULTRALYTICS_ENDPOINT_URL and ULTRALYTICS_API_KEY are set.'
+  })
+  platform!: boolean;
 }
 
 @ObjectType({ description: 'The result of addManualCount, and the counter since its last reset.' })
@@ -488,4 +514,51 @@ export class PhotoRecord {
 
   @Field(() => Int, { description: "The model's boxes taken off by hand (not parcels)." })
   removed!: number;
+}
+
+@ObjectType({
+  description:
+    'A test video ready to use as a camera (test-videos/cameras.json): its settings, its line or area, and what one play counts.'
+})
+export class CountingTestVideo {
+  @Field({ description: 'test-videos/x.mp4, as a camera source.' })
+  sourceUrl!: string;
+
+  @Field({ description: 'The camera name it suggests.' })
+  name!: string;
+
+  @Field({ description: 'What the video shows.' })
+  about!: string;
+
+  @Field(() => Int)
+  fps!: number;
+
+  @Field(() => Float)
+  confThreshold!: number;
+
+  @Field(() => Int)
+  width!: number;
+
+  @Field(() => Int)
+  height!: number;
+
+  @Field()
+  loop!: boolean;
+
+  @Field(() => String, {
+    nullable: true,
+    description: 'Its detector (demo:orange); null = the service model.'
+  })
+  model!: string | null;
+
+  @Field(() => E.RegionTypeEnum, {
+    description: 'A line or an area: set on the camera when it is created.'
+  })
+  regionType!: E.RegionTypeEnum;
+
+  @Field(() => Int, { description: 'Parcels IN in one play of the video.' })
+  expectedIn!: number;
+
+  @Field(() => Int, { description: 'Parcels OUT in one play of the video.' })
+  expectedOut!: number;
 }

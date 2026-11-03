@@ -7,6 +7,9 @@ node_modules
 
 # environment variables
 .env
+# every filled-in settings file (.env.pro, .env.local…); the template .env.example stays
+.env.*
+!.env.example
 deploy/ssh_key
 
 # IDE
@@ -42,3 +45,11 @@ models/*.pt
 
 # training moved to ../Jalat-Ultralytics-Service (2026-10-22); keep a leftover training/ out of git
 training/
+
+# scratch output (frames, drawn pictures)
+tmp/
+
+# test-videos/: the counted copies are made by `yarn video:count`, and the reference demo is a
+# third-party recording kept on this machine only
+test-videos/*-counted.mp4
+test-videos/reference-counting-demo.mp4

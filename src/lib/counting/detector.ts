@@ -15,6 +15,8 @@ export interface DetectOptions {
   conf: number;
   /** Class ids to keep; empty = all. */
   classes?: number[];
+  /** Classes counted as another (labels/foldClasses: the parcel model's words for one thing), before `classes`. */
+  fold?: Record<number, number>;
 }
 
 /**
@@ -42,7 +44,8 @@ export function parseDetections(
     const o = i * stride;
     const score = data[o + 4];
     if (!(score >= options.conf)) continue;
-    const classId = Math.round(data[o + 5]);
+    const raw = Math.round(data[o + 5]);
+    const classId = options.fold?.[raw] ?? raw;
     if (keep && !keep.has(classId)) continue;
     const box = toSourceBox(
       { x1: data[o], y1: data[o + 1], x2: data[o + 2], y2: data[o + 3] },
@@ -58,11 +61,16 @@ export function parseDetections(
 
 /** Frame in, detections out (source pixels). */
 export class Detector {
-  constructor(private readonly infer: InferFn, private readonly size: number) {}
+  constructor(
+    private readonly infer: InferFn,
+    private readonly size: number,
+    /** The model's classes that count as one (labels/foldClasses); none = as they are. */
+    private readonly fold: Record<number, number> = {}
+  ) {}
 
   async detect(frame: Frame, options: DetectOptions): Promise<Detection[]> {
     const lb = letterbox(frame, this.size);
     const output = await this.infer(lb.tensor, this.size);
-    return parseDetections(output, lb, frame.width, frame.height, options);
+    return parseDetections(output, lb, frame.width, frame.height, { fold: this.fold, ...options });
   }
 }

@@ -36,6 +36,20 @@ export class InferenceService implements OnModuleInit {
     return Number(this.config.env.MODEL_THREADS) || 0;
   }
 
+  /** The Platform endpoint for cameras set to run on it: ULTRALYTICS_ENDPOINT_URL, else MODEL_PATH's when that is one. */
+  get platformUrl(): string | undefined {
+    const url = this.config.env.ULTRALYTICS_ENDPOINT_URL?.trim();
+    if (url) return url;
+    return isUltralyticsModel(this.modelPath)
+      ? ultralyticsUrlOf(this.modelPath) || undefined
+      : undefined;
+  }
+
+  /** Cameras can be set to run on Ultralytics Platform (an endpoint and a key). */
+  get platformAvailable(): boolean {
+    return !!this.platformUrl && !!this.apiKey?.trim();
+  }
+
   /** MODEL_PATH=ultralytics:<url>: the key the camera workers send. */
   get apiKey(): string | undefined {
     return this.config.env.ULTRALYTICS_API_KEY;

@@ -1,0 +1,42 @@
+# The camera relay (go2rtc), on with COMPOSE_PROFILES=relay. It connects to each camera once and
+# serves it at a fixed address the counting service reads:
+#
+#   rtsp://go2rtc:8554/cam1       camera 1, full size
+#   rtsp://go2rtc:8554/cam1_sub   camera 1, the small stream (enough to count, lighter)
+#
+# In the warehouse app: Count → add a camera → Network camera → brand "Relay (go2rtc)", host go2rtc,
+# channel = the camera's number here. Name the streams camN / camN_sub so the app finds them.
+#
+# Why a relay: the address never changes (no expiring cloud link), no camera is open to the
+# internet, the passwords stay in this file on the server, and one connection to each camera is
+# shared. Its page (streams, a preview of each, adding one) is on http://localhost:1984 on this
+# machine; it writes what is added there back into this file.
+#
+# A source per camera, from the go2rtc docs (https://github.com/AlexxIT/go2rtc#source-rtsp and the
+# sections below it). The ones Jalat's cameras use:
+#
+#   Any camera with RTSP (Hikvision, Dahua / Imou, EZVIZ, Reolink, Uniview, Tapo):
+#     cam1: rtsp://admin:PASSWORD@192.168.1.64:554/Streaming/Channels/101      # Hikvision main
+#     cam1_sub: rtsp://admin:PASSWORD@192.168.1.64:554/Streaming/Channels/102  # Hikvision small
+#   A camera found by ONVIF (it asks the camera for its own address):
+#     cam2: onvif://admin:PASSWORD@192.168.1.108
+#   TP-Link Tapo, with the TP-Link cloud password (no camera account needed):
+#     cam3: tapo://CLOUD_PASSWORD@192.168.1.30
+#   A cheap DVR / camera on the XMeye app (DVRIP):
+#     cam4: dvrip://admin:PASSWORD@192.168.1.50:34567?channel=0&subtype=0
+#   A cloud stream link (HLS / RTMP), as a last resort: it expires, go2rtc does not renew it:
+#     cam5: https://example.com/live/stream.m3u8
+#
+# Passwords with @ : / # must be URL-encoded (@ → %40).
+
+api:
+  # Its page and API, for this machine only (deploy/docker-compose.yml binds it to 127.0.0.1).
+  listen: ':1984'
+
+rtsp:
+  # What the counting service reads (inside Docker: go2rtc:8554).
+  listen: ':8554'
+
+streams:
+  # cam1: rtsp://admin:PASSWORD@192.168.1.64:554/Streaming/Channels/101
+  # cam1_sub: rtsp://admin:PASSWORD@192.168.1.64:554/Streaming/Channels/102

@@ -1,5 +1,7 @@
 import {
   BadRequestException,
+  HttpException,
+  HttpStatus,
   Injectable,
   OnApplicationBootstrap,
   Logger,
@@ -8,79 +10,34 @@ import {
 } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { existsSync, promises as fs, statSync } from 'fs';
-import { basename, isAbsolute, relative, resolve } from 'path';
+import { isAbsolute, relative, resolve } from 'path';
 import { CountingViewer } from 'src/repositories/counting-camera.repository';
 
-import { C } from '@common';
 import { CountingPhotoRecordEntity } from '@entities';
 import { ConfigService } from '@lib/config';
-import {
-  ColorDetector,
-  DEMO_MODEL,
-  Detection,
-  Detector,
-  DetectorLike,
-  Frame,
-  isUltralyticsModel,
-  UltralyticsApiDetector,
-  ultralyticsUrlOf
-} from '@lib/counting';
-import {
-  COPY_BITS,
-  Embedder,
-  fingerprintDistance,
-  imageFileToJpeg,
-  loadEmbedder,
-  loadOnnxModel,
-  PHOTO_FILE,
-  photoFingerprint,
-  photoFrame
-} from '@lib/inference';
+import { COPY_BITS, fingerprintDistance, imageFileToJpeg, PHOTO_FILE } from '@lib/inference';
 import { CountingPhotoRecordRepository } from '@repositories';
 
 import * as I from './counting.input';
 import { InferenceService } from './inference.service';
+import {
+  PhotoCounterSettings,
+  PhotoCountOptions,
+  PhotoCountResult,
+  PhotoModelError,
+  PhotoModelInfo,
+  photoResult
+} from './photo-counter';
+import { PhotoQueue, PhotoQueueFullError } from './photo-queue';
+import { createPhotoRunner, PhotoRunner } from './photo-runner';
 
-export interface PhotoCountOptions {
-  /** Minimum score (0–1); the service's DEFAULT_CONF when left out. */
-  conf?: number | null;
-  /** Class ids to count; all when empty. */
-  classes?: number[] | null;
-}
-
-export interface PhotoCountResult {
-  name: string;
-  width: number;
-  height: number;
-  count: number;
-  byClass: { label: string; count: number }[];
-  /** Boxes as fractions of the photo (0–1), for the app to draw over its own copy. */
-  boxes: PhotoBoxResult[];
-  /** Boxes the model gave but that were not counted, and why (shown dashed in the app). */
-  skipped: (PhotoBoxResult & { reason: SkipReason })[];
-  /** The photo's fingerprint (photoFingerprint): the same scene twice has nearly the same one. */
-  fingerprint: string | null;
-  /**
-   * One per box (same order): the parcel's look (512 numbers, length 1), when the look-alike model
-   * is there; the app compares them across the batch's photos to suggest repeated parcels.
-   */
-  embeddings: number[][] | null;
-  /** In a folder count: the earlier photo this one is a copy of (not counted again); else null. */
-  copyOf: string | null;
-  /** The saved record of this photo (when counted in a batch); null when not saved. */
-  recordId: string | null;
-  /** The earlier counted photo this one is a copy of, from the records (any batch, last PHOTO_DUP_DAYS). */
-  copyOfRecord: PhotoRecordRef | null;
-  error: string | null;
-}
-
-/** An earlier counted photo, as a copy points to it. */
-export interface PhotoRecordRef {
-  id: string;
-  name: string;
-  batchId: string;
-  createdAt: Date;
-}
+export type {
+  PhotoBoxResult,
+  PhotoCountOptions,
+  PhotoCountResult,
+  PhotoModelInfo,
+  PhotoRecordRef
+} from './photo-counter';
 
 /** Save a counted photo to the records: whose batch, and its place in it. */
 export interface PhotoSave {
@@ -91,17 +48,7 @@ export interface PhotoSave {
   note?: string | null;
 }
 
-export interface PhotoBoxResult {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  label: string;
-  score: number;
-}
-
-/** duplicate: the same parcel boxed twice; floor: a box over most of the photo; weak: a weak guess lying on a surer parcel */
-export type SkipReason = 'duplicate' | 'floor' | 'weak';
+export type { SkipReason } from '@lib/counting';
 
 export interface PhotoFolderResult {
   folder: string;
@@ -116,21 +63,6 @@ export interface PhotoFolderResult {
   copies: number;
 }
 
-/** What counts the objects in photos, and how. */
-export interface PhotoModelInfo {
-  /** parcels: the parcel model (every object is a parcel); cameras: the cameras' model and labels */
-  kind: 'parcels' | 'cameras';
-  /** The model file (or demo / Ultralytics endpoint) */
-  name: string;
-  /** The confidence used when the app sends none */
-  conf: number;
-}
-
-interface PhotoModel extends PhotoModelInfo {
-  detector: DetectorLike;
-  labelOf: (classId: number) => string;
-}
-
 /** The parcel look-alike model looked for when PHOTO_EMBED_PATH is not set. */
 export const DEFAULT_EMBED_MODEL = 'models/parcel-embed.onnx';
 
@@ -143,46 +75,18 @@ export const DEFAULT_PHOTO_MODEL = 'models/parcel-world-m.onnx';
  */
 const DEFAULT_PHOTO_MODELS = [DEFAULT_PHOTO_MODEL, 'models/parcel-world-l.onnx'];
 
-/** Below this score a box is a weak guess: kept only when it isn't lying on a surer parcel. */
-export const WEAK_PARCEL = 0.1;
-
 /**
- * The parcel model's boxes, tidied: a box over most of the photo is the floor, and a box mostly
- * inside another (or around it) is the same parcel seen twice; the more certain one stays. A weak
- * guess (under WEAK_PARCEL) lying for the most part on a surer parcel is the floor or a corner of
- * it; a weak guess on its own (a parcel wrapped in paper, which the model finds hard) stays.
+ * The parcel model's confidence when PHOTO_CONF is not set. Low on purpose: in a real pile a parcel
+ * half hidden by another, or small on a big one, scores 0.01–0.05; sortParcels drops the floor,
+ * groups and pieces this lets in (27 Oct 2026: photos/real-2026-10-27 and pickup-2026-10-21 off by
+ * 3 parcels in all with 0.01, 14 with the earlier 0.06 and in-model NMS at IoU 0.4).
  */
-export function tidyParcels(detections: Detection[], width: number, height: number): Detection[] {
-  return sortParcels(detections, width, height).kept;
-}
+export const DEFAULT_PHOTO_CONF = 0.01;
 
-/** tidyParcels, with the boxes it leaves out and why. */
-export function sortParcels(
-  detections: Detection[],
-  width: number,
-  height: number
-): { kept: Detection[]; skipped: { detection: Detection; reason: SkipReason }[] } {
-  const area = (b: Detection['box']) => Math.max(0, b.x2 - b.x1) * Math.max(0, b.y2 - b.y1);
-  const inside = (a: Detection['box'], b: Detection['box']) => {
-    const w = Math.max(0, Math.min(a.x2, b.x2) - Math.max(a.x1, b.x1));
-    const h = Math.max(0, Math.min(a.y2, b.y2) - Math.max(a.y1, b.y1));
-    return area(a) ? (w * h) / area(a) : 0;
-  };
-  const kept: Detection[] = [];
-  const skipped: { detection: Detection; reason: SkipReason }[] = [];
-  for (const d of [...detections].sort((a, b) => b.score - a.score)) {
-    if (area(d.box) > 0.45 * width * height) skipped.push({ detection: d, reason: 'floor' });
-    else if (kept.some(k => inside(d.box, k.box) > 0.6 || inside(k.box, d.box) > 0.6))
-      skipped.push({ detection: d, reason: 'duplicate' });
-    else if (d.score < WEAK_PARCEL && kept.some(k => inside(d.box, k.box) > 0.4))
-      skipped.push({ detection: d, reason: 'weak' });
-    else kept.push(d);
-  }
-  return { kept, skipped };
-}
+export { GROUP_PART, SAME_SIZE, WEAK_PARCEL, sortParcels, tidyParcels } from '@lib/counting';
 
 /** Folders a folder count may read when PHOTO_ROOTS is not set (in the service's folder). */
-const DEFAULT_ROOTS = 'photos,samples';
+const DEFAULT_ROOTS = 'photos,test-videos';
 export const PHOTO_FOLDER_MAX = 500;
 
 /**
@@ -192,21 +96,27 @@ export const PHOTO_FOLDER_MAX = 500;
  * tidied (tidyParcels) and all called "parcel". Without that file, the cameras' detector
  * (MODEL_PATH: the ONNX model, the Ultralytics endpoint, or the demo colour detector), by label. No tracking and no line: every object seen counts once. The
  * photos come from the warehouse app (one JPEG a request, made small on the phone) or from a folder
- * on this machine, inside PHOTO_ROOTS. One photo at a time, so a batch never starves the cameras.
+ * on this machine, inside PHOTO_ROOTS. One photo at a time, so a batch never starves the cameras,
+ * each user in turn and refused with 429 when too many wait (PhotoQueue), counted in a worker thread
+ * of its own (photo.worker.ts) so the API stays responsive meanwhile.
  */
 @Injectable()
 export class PhotoCountService implements OnApplicationBootstrap {
-  private model: Promise<PhotoModel> | null = null;
-  private embedder: Promise<Embedder | null> | null = null;
   private readonly logger = new Logger('PhotoCount');
-  private queue: Promise<unknown> = Promise.resolve();
+  private runner: PhotoRunner | null = null;
+  private readonly queue: PhotoQueue;
 
   constructor(
     private readonly inference: InferenceService,
     private readonly config: ConfigService,
     /** Optional so the photo counting core is tested without a database. */
     private readonly records?: CountingPhotoRecordRepository
-  ) {}
+  ) {
+    this.queue = new PhotoQueue(
+      this.config.env.PHOTO_QUEUE_MAX ?? 60,
+      this.config.env.PHOTO_QUEUE_PER_USER ?? 20
+    );
+  }
 
   /**
    * Loads the photo models and runs each once in the background when the service starts: the first
@@ -218,20 +128,64 @@ export class PhotoCountService implements OnApplicationBootstrap {
   }
 
   private warmUp(): Promise<void> {
-    return this.oneAtATime(async () => {
-      const t = Date.now();
-      try {
-        const model = await this.getModel();
-        const frame: Frame = { data: new Uint8Array(64 * 64 * 3), width: 64, height: 64 };
-        await model.detector.detect(frame, { conf: model.conf, classes: [] });
-        await this.embeddingsOf(frame, [
-          { box: { x1: 8, y1: 8, x2: 56, y2: 56 }, score: 1, classId: 0 }
-        ]);
-        this.logger.log(`Photo models ready (${model.name}) in ${Date.now() - t} ms`);
-      } catch (error: any) {
-        this.logger.warn(`Photo models not warmed up: ${error?.message ?? error}`);
+    return this.queue
+      .add('warm-up', () => this.run(r => r.warmUp()))
+      .then(
+        ready => this.logger.log(ready),
+        error => this.logger.warn(`Photo models not warmed up: ${error?.message ?? error}`)
+      );
+  }
+
+  /** What the photo counter is made from (read when it starts, again after a model error). */
+  private settings(): PhotoCounterSettings {
+    const env = this.config.env;
+    // onnxruntime's execution provider: the cameras' provider is "demo" or "ultralytics" when
+    // they run no ONNX model, so those mean the configured one (cpu unless MODEL_PROVIDER says).
+    const cameraProvider = this.inference.provider;
+    const provider = ['demo', 'ultralytics'].includes(cameraProvider)
+      ? env.MODEL_PROVIDER || 'cpu'
+      : cameraProvider;
+    return {
+      parcelModelPath: this.photoModelPath(),
+      parcelConf: env.PHOTO_CONF ?? DEFAULT_PHOTO_CONF,
+      parcelInputSize: env.PHOTO_MODEL_SIZE ?? 1280,
+      provider,
+      threads: this.inference.threads,
+      embedPath:
+        env.PHOTO_EMBED_PATH === 'off'
+          ? null
+          : resolve(process.cwd(), env.PHOTO_EMBED_PATH || DEFAULT_EMBED_MODEL),
+      camera: {
+        loaded: this.inference.modelLoaded,
+        error: this.inference.modelError ?? null,
+        path: this.inference.modelPath,
+        labels: this.inference.labels,
+        apiKey: this.inference.apiKey ?? null,
+        conf: env.DEFAULT_CONF ?? 0.4
       }
-    });
+    };
+  }
+
+  /**
+   * A job on the photo counter (made on first use). A model error starts a new one next time, with
+   * fresh settings (the cameras' model may have loaded since); it is said as 503.
+   */
+  private async run<T>(job: (runner: PhotoRunner) => Promise<T>): Promise<T> {
+    this.runner ??= createPhotoRunner(
+      this.settings(),
+      message => this.logger.warn(message),
+      this.config.env.PHOTO_WORKER === 'off' ? false : undefined
+    );
+    try {
+      return await job(this.runner);
+    } catch (error: any) {
+      if (error instanceof PhotoModelError) {
+        this.runner?.close();
+        this.runner = null;
+        throw new ServiceUnavailableException(error.message);
+      }
+      throw error;
+    }
   }
 
   /** The folders a folder count may read, as absolute paths. */
@@ -270,41 +224,34 @@ export class PhotoCountService implements OnApplicationBootstrap {
   }
 
   /** What counts the photos (the app shows it, and hides "what to count" for the parcel model). */
-  async modelInfo(): Promise<PhotoModelInfo> {
-    const { kind, name, conf } = await this.getModel();
-    return { kind, name, conf };
+  modelInfo(): Promise<PhotoModelInfo> {
+    return this.run(r => r.info());
   }
 
   /** One photo (a JPEG): what the model sees in it, counted by label. */
-  countJpeg(
+  async countJpeg(
     jpeg: Buffer,
     name: string,
     options: PhotoCountOptions = {},
-    save?: PhotoSave
+    save?: PhotoSave,
+    /** Whose turn it is in the queue: the viewer's id, else the batch's. */
+    user = save?.viewer.id ?? 'anonymous'
   ): Promise<PhotoCountResult> {
-    return this.oneAtATime(async () => {
-      const model = await this.getModel();
-      const frame = photoFrame(jpeg);
-      let detections = await model.detector.detect(frame, {
-        conf: options.conf ?? model.conf,
-        // The parcel model's classes are words for one thing: a parcel.
-        classes: model.kind === 'parcels' ? [] : options.classes ?? []
+    try {
+      return await this.queue.add(user, async () => {
+        const result = await this.run(r => r.count(jpeg, name, options));
+        // Saved in the same turn, so two photos of one batch never miss each other.
+        if (save && this.records) Object.assign(result, await this.saveRecord(result, save));
+        return result;
       });
-      let skipped: { detection: Detection; reason: SkipReason }[] = [];
-      if (model.kind === 'parcels') {
-        const sorted = sortParcels(detections, frame.width, frame.height);
-        detections = sorted.kept;
-        skipped = sorted.skipped;
-      }
-      const result: PhotoCountResult = {
-        ...this.result(name, frame.width, frame.height, detections, model.labelOf, skipped),
-        fingerprint: photoFingerprint(frame),
-        embeddings: await this.embeddingsOf(frame, detections)
-      };
-      // Saved in the same turn, so two photos of one batch never miss each other.
-      if (save && this.records) Object.assign(result, await this.saveRecord(result, save));
-      return result;
-    });
+    } catch (error) {
+      if (error instanceof PhotoQueueFullError)
+        throw new HttpException(
+          { statusCode: 429, message: error.message, retryAfter: error.retryAfterSeconds },
+          HttpStatus.TOO_MANY_REQUESTS
+        );
+      throw error;
+    }
   }
 
   /**
@@ -504,12 +451,18 @@ export class PhotoCountService implements OnApplicationBootstrap {
           ? await fs.readFile(file)
           : await imageFileToJpeg(file, this.inference.ffmpegPath);
         photos.push(
-          await this.countJpeg(jpeg, name, options, viewer ? { viewer, batchId, seq } : undefined)
+          await this.countJpeg(
+            jpeg,
+            name,
+            options,
+            viewer ? { viewer, batchId, seq } : undefined,
+            viewer?.id ?? `folder:${batchId}`
+          )
         );
       } catch (error: any) {
         if (error instanceof ServiceUnavailableException) throw error;
         photos.push({
-          ...this.result(name, 0, 0, [], () => ''),
+          ...photoResult(name, 0, 0, [], () => ''),
           error: error?.message ?? String(error)
         });
       }
@@ -530,75 +483,6 @@ export class PhotoCountService implements OnApplicationBootstrap {
     };
   }
 
-  private result(
-    name: string,
-    width: number,
-    height: number,
-    detections: Detection[],
-    labelOf: (classId: number) => string,
-    skipped: { detection: Detection; reason: SkipReason }[] = []
-  ): PhotoCountResult {
-    const byClass = new Map<string, number>();
-    for (const d of detections)
-      byClass.set(labelOf(d.classId), (byClass.get(labelOf(d.classId)) ?? 0) + 1);
-    const round = (n: number) => Math.round(n * 10000) / 10000;
-    return {
-      name: basename(name),
-      width,
-      height,
-      count: detections.length,
-      byClass: [...byClass]
-        .map(([label, count]) => ({ label, count }))
-        .sort((a, b) => b.count - a.count),
-      boxes: detections.map(d => toBox(d)),
-      skipped: skipped.map(s => ({ ...toBox(s.detection), reason: s.reason })),
-      fingerprint: null,
-      embeddings: null,
-      copyOf: null,
-      recordId: null,
-      copyOfRecord: null,
-      error: null
-    };
-    function toBox(d: Detection): PhotoBoxResult {
-      return {
-        x: round(d.box.x1 / width),
-        y: round(d.box.y1 / height),
-        w: round((d.box.x2 - d.box.x1) / width),
-        h: round((d.box.y2 - d.box.y1) / height),
-        label: labelOf(d.classId),
-        score: round(d.score)
-      };
-    }
-  }
-
-  /**
-   * Each box's look (rounded, to keep the answer small), when the look-alike model is there; null
-   * without it or when it fails (the count itself never fails for it).
-   */
-  private async embeddingsOf(frame: Frame, detections: Detection[]): Promise<number[][] | null> {
-    try {
-      this.embedder ??= (async () => {
-        const configured = this.config.env.PHOTO_EMBED_PATH;
-        if (configured === 'off') return null;
-        const path = resolve(process.cwd(), configured || DEFAULT_EMBED_MODEL);
-        const provider = ['demo', 'ultralytics'].includes(this.inference.provider)
-          ? this.config.env.MODEL_PROVIDER || 'cpu'
-          : this.inference.provider;
-        return loadEmbedder(path, provider, this.inference.threads);
-      })();
-      const embedder = await this.embedder;
-      if (!embedder || !detections.length) return embedder ? [] : null;
-      const vectors = await embedder.embed(
-        frame,
-        detections.map(d => d.box)
-      );
-      return vectors.map(v => Array.from(v, n => Math.round(n * 10000) / 10000));
-    } catch (error: any) {
-      this.logger.warn(`Parcel look-alike model: ${error?.message ?? error}`);
-      return null;
-    }
-  }
-
   /** The parcel model file, if there is one: PHOTO_MODEL_PATH, else parcel-world-m (or -l) in models/. */
   photoModelPath(): string | null {
     const configured = this.config.env.PHOTO_MODEL_PATH;
@@ -606,72 +490,6 @@ export class PhotoCountService implements OnApplicationBootstrap {
       resolve(process.cwd(), p)
     );
     return paths.find(p => existsSync(p)) ?? null;
-  }
-
-  /**
-   * Made once for this process: the parcel model when its file is there, else the cameras'
-   * detector (MODEL_PATH) with their labels.
-   */
-  private getModel(): Promise<PhotoModel> {
-    this.model ??= (async (): Promise<PhotoModel> => {
-      const parcelPath = this.photoModelPath();
-      if (parcelPath) {
-        // onnxruntime's execution provider: the cameras' provider is "demo" or "ultralytics" when
-        // they run no ONNX model, so those mean the configured one (cpu unless MODEL_PROVIDER says).
-        const cameraProvider = this.inference.provider;
-        const provider = ['demo', 'ultralytics'].includes(cameraProvider)
-          ? this.config.env.MODEL_PROVIDER || 'cpu'
-          : cameraProvider;
-        const model = await loadOnnxModel(parcelPath, provider, this.inference.threads);
-        return {
-          kind: 'parcels',
-          name: basename(parcelPath),
-          conf: this.config.env.PHOTO_CONF ?? 0.06,
-          detector: new Detector(model.infer, this.config.env.PHOTO_MODEL_SIZE ?? 1280),
-          labelOf: () => 'parcel'
-        };
-      }
-      if (!this.inference.modelLoaded)
-        throw new ServiceUnavailableException(
-          `No model to count with: ${this.inference.modelError ?? 'MODEL_PATH is not loaded.'}`
-        );
-      const path = this.inference.modelPath;
-      const labelOf = (id: number) => this.inference.labels[id] ?? `class ${id}`;
-      const conf = this.config.env.DEFAULT_CONF ?? 0.4;
-      if (path === DEMO_MODEL)
-        return { kind: 'cameras', name: path, conf, detector: new ColorDetector(), labelOf };
-      if (isUltralyticsModel(path))
-        return {
-          kind: 'cameras',
-          name: 'ultralytics',
-          conf,
-          detector: new UltralyticsApiDetector({
-            url: ultralyticsUrlOf(path),
-            apiKey: this.inference.apiKey ?? '',
-            imgsz: C.MODEL_INPUT_SIZE
-          }),
-          labelOf
-        };
-      const model = await loadOnnxModel(path, this.inference.provider, this.inference.threads);
-      return {
-        kind: 'cameras',
-        name: basename(path),
-        conf,
-        detector: new Detector(model.infer, C.MODEL_INPUT_SIZE),
-        labelOf
-      };
-    })().catch(error => {
-      this.model = null;
-      if (error instanceof ServiceUnavailableException) throw error;
-      throw new ServiceUnavailableException(`The model could not be loaded: ${error.message}`);
-    });
-    return this.model;
-  }
-
-  private oneAtATime<T>(job: () => Promise<T>): Promise<T> {
-    const next = this.queue.then(job, job);
-    this.queue = next.catch(() => undefined);
-    return next;
   }
 }
 

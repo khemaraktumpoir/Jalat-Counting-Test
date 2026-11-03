@@ -8,7 +8,7 @@ export const TEMP_PATH   = resolve('.', 'public', 'upload', 'temp'); // prettier
 export const COUNTING_ROLES = ['ADMIN', 'OPERATION', 'MOBILE_WAREHOUSE'];
 
 // What an account with a role (the User Service's Roles, roleId in the token) may do here: the
-// role's permission codes (Permissions / RolePermissions, seeded by scripts/seed-counter-role.ts).
+// role's permission codes (Permissions / RolePermissions, seeded by scripts/seed-warehouse-roles.ts).
 // An account without a role may do all of it, as before roles.
 export const COUNTING_PERMISSIONS = {
   /** Cameras, counts, history, live view, photo records. */

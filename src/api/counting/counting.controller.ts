@@ -8,6 +8,7 @@ import {
   Param,
   ParseUUIDPipe,
   Post,
+  Query,
   Req,
   Res,
   UseFilters
@@ -16,13 +17,15 @@ import { Request, Response } from 'express';
 
 import { Auth, C, Permission, RestExceptionFilter } from '@common';
 import { CameraManagerService, CountingService } from '@graphql/counting';
-import { isPhoneSource } from '@lib/inference';
+import { isPhoneSource, testVideoFile } from '@lib/inference';
 
 /**
- * What is not GraphQL: images. Both take the token as a header or ?access_token= (an <img> cannot
- * send a header).
+ * What is not GraphQL: images and videos. They take the token as a header or ?access_token= (an <img>
+ * or a <video> cannot send a header).
  *   GET /api/v1/counting/cameras/:id/snapshot   one JPEG (the region editor's background)
  *   GET /api/v1/counting/cameras/:id/stream     MJPEG: the frames with the region, the IN arrow and the boxes
+ *   GET /api/v1/counting/cameras/:id/video      a test-video camera's video file (mp4), seekable (Range);
+ *                                               ?counted=1: its counted copy (x-counted.mp4) instead
  *   POST /api/v1/counting/cameras/:id/frames    a phone camera ("phone:"): one JPEG (body image/jpeg)
  *                                               from the warehouse app's filming page (a phone's camera or a PC's webcam)
  */
@@ -72,6 +75,26 @@ export class CountingController {
       Connection: 'close'
     });
     req.on('close', stop);
+  }
+
+  @Auth('ADMIN', 'OPERATION', 'MOBILE_WAREHOUSE')
+  @Permission(C.COUNTING_PERMISSIONS.READ)
+  @Get(':id/video')
+  async video(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query('counted') counted: string | undefined,
+    @Req() req: Request,
+    @Res() res: Response
+  ): Promise<void> {
+    const camera = await this.service.camera(id, (req as any).user);
+    // Only the camera's own source, and only inside test-videos/ (testVideoFile).
+    const file = testVideoFile(camera.sourceUrl, counted === '1' || counted === 'true');
+    if (!file)
+      throw new NotFoundException(
+        counted ? 'This camera has no counted video.' : 'This camera does not play a test video.'
+      );
+    // sendFile answers Range requests (206), so the player can seek.
+    res.sendFile(file, { headers: { 'Cache-Control': 'private, max-age=300' } });
   }
 
   @Auth('ADMIN', 'OPERATION', 'MOBILE_WAREHOUSE')

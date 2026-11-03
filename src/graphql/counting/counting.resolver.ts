@@ -1,9 +1,9 @@
 import { applyDecorators, ForbiddenException } from '@nestjs/common';
 import { Args, ID, Int, Mutation, Parent, Query, ResolveField, Resolver } from '@nestjs/graphql';
 
-import { ArgsId, Auth, C, CurrentUser, Permission } from '@common';
+import { ArgsId, Auth, C, CurrentUser, E, Permission } from '@common';
 import { User } from '@graphql/user';
-import { isManualSource } from '@lib/inference';
+import { isManualSource, listTestVideos, testVideoPresets } from '@lib/inference';
 
 import * as I from './counting.input';
 import * as M from './counting.model';
@@ -147,6 +147,37 @@ export class CountingResolver {
   })
   countingPhotoRoots() {
     return this.photos.rootNames();
+  }
+
+  @Counting(P.READ)
+  @Query(() => [String], {
+    description:
+      'Test videos on the counting service (test-videos/ and its folders), as a camera source takes them: e.g. "test-videos/real-2026-10-27/video.mp4".'
+  })
+  countingTestVideos() {
+    return listTestVideos();
+  }
+
+  @Counting(P.READ)
+  @Query(() => [M.CountingTestVideo], {
+    description:
+      'The test videos ready to use as a camera (test-videos/cameras.json): a camera created on one gets its detector and its line or area.'
+  })
+  countingTestVideoPresets(): M.CountingTestVideo[] {
+    return testVideoPresets().map(p => ({
+      sourceUrl: p.sourceUrl,
+      name: p.name,
+      about: p.about,
+      fps: p.fps,
+      confThreshold: p.confThreshold,
+      width: p.width,
+      height: p.height,
+      loop: p.loop,
+      model: p.model ?? null,
+      regionType: E.RegionTypeEnum[p.region.type],
+      expectedIn: p.expected.in,
+      expectedOut: p.expected.out
+    }));
   }
 
   @Counting(P.READ)

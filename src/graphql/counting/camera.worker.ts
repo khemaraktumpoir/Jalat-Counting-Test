@@ -5,6 +5,10 @@
  * falling behind. A stream that stops is opened again after 2 s, 4 s, 8 s … (at most reconnectMaxMs);
  * a video file that ends without `loop` is not: the camera stops there ('ended').
  * A phone camera ("phone:") has no stream: the warehouse app's JPEGs come as 'frame' messages.
+ * The ONNX model runs in the model pool's worker shared with the other cameras (RemoteModel; data.pooled),
+ * else here (MODEL_WORKERS=0, demo:orange, ultralytics:).
+ * The live preview (only while someone watches) is sent at most PREVIEW_FPS a second and at most
+ * PREVIEW_WIDTH wide: a full-size JPEG of every frame cost the CPU and the viewer's mobile data.
  */
 import { encode as encodeJpeg } from 'jpeg-js';
 import { parentPort, workerData } from 'worker_threads';
@@ -16,6 +20,7 @@ import {
   CountingPipeline,
   Counts,
   DEMO_MODEL,
+  isParcelModel,
   isUltralyticsModel,
   UltralyticsApiDetector,
   ultralyticsUrlOf,
@@ -25,13 +30,26 @@ import {
   drawPolyline,
   Frame,
   RegionShape,
+  shrinkFrame,
   Track
 } from '@lib/counting';
-import { FrameSource, frameOfJpeg, isPhoneSource, isStream, loadOnnxModel } from '@lib/inference';
+import {
+  FrameSource,
+  foldClasses,
+  frameOfJpeg,
+  isPhoneSource,
+  isStream,
+  loadOnnxModel,
+  relayEmptyHint
+} from '@lib/inference';
 
 import type { CameraWorkerData, FromWorker, RunStatus, ToWorker } from './camera-worker.protocol';
+import { RemoteModel } from './remote-model';
 
 const data = workerData as CameraWorkerData;
+/** The live preview: at most this many pictures a second, at most this wide (the counting runs at full size). */
+const PREVIEW_FPS = 5;
+const PREVIEW_WIDTH = 640;
 const post = (message: FromWorker) => parentPort!.postMessage(message);
 
 let pipeline: CountingPipeline | null = null;
@@ -44,6 +62,7 @@ let lastTracks: Track[] = [];
 let busy = false;
 let pending: Frame | null = null;
 let preview = false;
+let lastPreviewAt = 0;
 let stopped = false;
 let lastCountsJson = '';
 let retryMs = 2000;
@@ -55,6 +74,8 @@ let fps = 0;
 /** Why frames are read but not counted (no model, no region yet); null while counting. */
 let notCounting: string | null = null;
 let region: RegionShape | null = data.region;
+/** Pooled: the model worker's side, its port sent by the manager. */
+const remote = data.pooled ? new RemoteModel() : null;
 
 function setStatus(next: RunStatus, error?: string): void {
   status = next;
@@ -93,8 +114,12 @@ async function processFrame(frame: Frame): Promise<void> {
       const result = await pipeline.process(frame);
       lastTracks = result.tracks;
       postCounts({ in: result.in, out: result.out, byClass: result.byClass });
+      // Counting again after a failed frame (the model worker restarted).
+      if (status === 'ERROR') setStatus('RUNNING');
     }
-    if (preview) {
+    const now = Date.now();
+    if (preview && now - lastPreviewAt >= 1000 / PREVIEW_FPS) {
+      lastPreviewAt = now;
       const copy: Frame = { ...frame, data: new Uint8Array(frame.data) };
       if (pipeline) pipeline.annotate(copy, lastTracks);
       else if (region) {
@@ -102,10 +127,9 @@ async function processFrame(frame: Frame): Promise<void> {
         if (region.type === 'LINE')
           drawInArrow(copy, region.points[0], region.points[1], COLORS.inArrow);
       }
-      post({ type: 'preview', jpeg: jpegOf(copy, 60) });
+      post({ type: 'preview', jpeg: jpegOf(shrinkFrame(copy, PREVIEW_WIDTH), 70) });
     }
     processed += 1;
-    const now = Date.now();
     if (now - fpsWindowStart >= 5000) {
       fps = Math.round((processed * 10_000) / (now - fpsWindowStart)) / 10;
       processed = 0;
@@ -132,7 +156,15 @@ async function processFrame(frame: Frame): Promise<void> {
 function startPipeline(next: RegionShape): void {
   region = next;
   if (!detector) return;
-  pipeline = new CountingPipeline(detector, { conf, classes, labels: data.labels, region: next });
+  // The parcel model: its boxes tidied on every frame, as photos are (one track per parcel).
+  const tidy = !!data.modelPath && data.modelPath !== DEMO_MODEL && isParcelModel(data.labels);
+  pipeline = new CountingPipeline(detector, {
+    conf,
+    classes,
+    labels: data.labels,
+    region: next,
+    tidy
+  });
   notCounting = null;
   if (status === 'RUNNING') setStatus('RUNNING');
 }
@@ -164,9 +196,14 @@ function openStream(): void {
     if (!error && !data.loop && !isStream(data.sourceUrl)) return void finishVideo();
     // ffmpeg's last line says why ("Connection refused", "404 Not Found", "Error number -138"…).
     const why = error?.split('\n').pop()?.trim();
-    setStatus('RECONNECTING', why ? `Can't reach the camera: ${why}` : 'The stream ended.');
+    const relayEmpty = why ? relayEmptyHint(data.sourceUrl, why) : null;
+    setStatus(
+      'RECONNECTING',
+      relayEmpty ?? (why ? `Can't reach the camera: ${why}` : 'The stream ended.')
+    );
     retryTimer = setTimeout(openStream, retryMs);
-    retryMs = Math.min(retryMs * 2, data.reconnectMaxMs);
+    // An empty relay stream is filled any moment (yarn pc-camera started): looked at every 5 s.
+    retryMs = Math.min(retryMs * 2, relayEmpty ? 5000 : data.reconnectMaxMs);
   });
   source.start();
 }
@@ -245,8 +282,12 @@ parentPort!.on('message', (message: ToWorker) => {
     case 'frame':
       if (isPhoneSource(data.sourceUrl)) onPhoneFrame(message.jpeg);
       break;
+    case 'model':
+      remote?.use(message.port);
+      break;
     case 'stop':
       stopped = true;
+      remote?.close();
       if (retryTimer) clearTimeout(retryTimer);
       if (phoneTimer) clearTimeout(phoneTimer);
       source?.stop();
@@ -265,9 +306,14 @@ parentPort!.on('message', (message: ToWorker) => {
         apiKey: data.apiKey ?? '',
         imgsz: C.MODEL_INPUT_SIZE
       });
+    } else if (remote) {
+      // One copy of the model for every camera on it: the model pool's worker.
+      await remote.ready;
+      detector = new Detector(remote.infer, C.MODEL_INPUT_SIZE, foldClasses(data.labels));
     } else {
       const model = await loadOnnxModel(data.modelPath, data.provider, data.threads);
-      detector = new Detector(model.infer, C.MODEL_INPUT_SIZE);
+      // The parcel model's words for one thing (all labelled "parcel") count as one class.
+      detector = new Detector(model.infer, C.MODEL_INPUT_SIZE, foldClasses(data.labels));
     }
     if (data.region) startPipeline(data.region);
     else notCounting = 'Not counting: draw a counting line or area first.';

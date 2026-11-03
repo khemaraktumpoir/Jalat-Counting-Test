@@ -1,0 +1,34 @@
+# The camera relay for local development (deploy/docker-compose.local.yml uses this file instead of
+# go2rtc.yaml): cam1 is a test video played in a loop, as a real camera would stream, so the whole
+# chain — relay → counting service → app — can be tried without a camera. Add real cameras below
+# as in go2rtc.yaml (cam2, cam3…).
+#
+# In the app: add a camera → Network camera → "Relay (go2rtc)", host go2rtc, channel 1, small
+# stream; set its detector to demo:orange (the test video's parcels are orange boxes) and draw the
+# area on the taped zone, or copy "Sample zone" from test-videos/cameras.json.
+
+api:
+  listen: ':1984'
+
+rtsp:
+  listen: ':8554'
+
+streams:
+  # The sample video (9 parcels carried into a zone), looped at its own speed, copied as it is.
+  cam1: exec:ffmpeg -hide_banner -re -stream_loop -1 -i /test-videos/warehouse-zone-by-hand.mp4 -c copy -rtsp_transport tcp -f rtsp {output}
+  cam1_sub: exec:ffmpeg -hide_banner -re -stream_loop -1 -i /test-videos/warehouse-zone-by-hand.mp4 -c copy -rtsp_transport tcp -f rtsp {output}
+  # The busy belt video (185 parcels in 60 s), looped as a live camera: counts with no webcam
+  # (Relay (go2rtc), host go2rtc, channel 3; "Relay belt stream" in test-videos/cameras.json).
+  cam3: exec:ffmpeg -hide_banner -re -stream_loop -1 -i /test-videos/belt-stream-zone.mp4 -c copy -rtsp_transport tcp -f rtsp {output}
+  cam3_sub: exec:ffmpeg -hide_banner -re -stream_loop -1 -i /test-videos/belt-stream-zone.mp4 -c copy -rtsp_transport tcp -f rtsp {output}
+  # A worker on a chair scans real parcels from a basket into a zone (9 in, made by
+  # Jalat-Ultralytics-Service/make_test_video.py basket), looped as a live camera like the PC webcam:
+  # Relay (go2rtc), host go2rtc, channel 4; "Relay chair, basket and scanner" in test-videos/cameras.json.
+  cam4: exec:ffmpeg -hide_banner -re -stream_loop -1 -i /test-videos/chair-basket-zone.mp4 -c copy -rtsp_transport tcp -f rtsp {output}
+  cam4_sub: exec:ffmpeg -hide_banner -re -stream_loop -1 -i /test-videos/chair-basket-zone.mp4 -c copy -rtsp_transport tcp -f rtsp {output}
+  # This PC's webcam, served by `yarn pc-camera` (scripts/pc-camera.ts) on the PC: a network camera
+  # for the app as a real one would be (Relay (go2rtc), host go2rtc, channel 2, small stream). The
+  # relay asks for it only while something watches cam2_sub, so the webcam is on only then. cam2
+  # (main stream) shows the same picture.
+  cam2_sub: http://host.docker.internal:8555/cam2_sub
+  cam2: rtsp://127.0.0.1:8554/cam2_sub

@@ -5,6 +5,7 @@ import { hostname } from 'os';
 import * as Entities from '@entities';
 import { ConfigService } from '@lib/config';
 
+import { CameraWarehousesSubscriber } from './camera-warehouses.subscriber';
 import { TypeOrmConfig } from './typeorm.dto';
 
 @Injectable()
@@ -22,6 +23,7 @@ export class TypeOrmConfigService implements TypeOrmOptionsFactory {
       database: config.DB_SCHEMA,
       logging: config.DB_LOGGING,
       entities: Object.values(Entities),
+      subscribers: [CameraWarehousesSubscriber],
       keepConnectionAlive: true, // ! use this for when using webpack
       synchronize: config.DB_SYNC,
       applicationName: `jalat-counting-service@${hostname()}`,

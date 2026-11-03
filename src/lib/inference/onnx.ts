@@ -1,9 +1,16 @@
 import { existsSync } from 'fs';
 
-import type { InferFn } from '@lib/counting';
+import type { InferFn, ModelOutput } from '@lib/counting';
 
 export interface OnnxModel {
   infer: InferFn;
+  /**
+   * Runs several tensors (each 1×3×size×size) as one batch: one answer each, in order. Only for a
+   * model exported with a dynamic batch (see batchSize); otherwise one run each.
+   */
+  inferBatch: (inputs: Float32Array[], size: number) => Promise<ModelOutput[]>;
+  /** How many frames one run may take, found by trying 2: 1 for a fixed-batch export. */
+  batchSize: (size: number, max: number) => Promise<number>;
   inputName: string;
   outputName: string;
   /** The execution provider asked for (onnxruntime falls back to cpu when it is not built in). */
@@ -11,8 +18,9 @@ export interface OnnxModel {
 }
 
 /**
- * Loads the YOLO26 ONNX model once (onnxruntime-node). Each camera worker loads its own (a session
- * cannot be shared between threads); the API loads one at startup to check the file and report it.
+ * Loads the YOLO26 ONNX model once (onnxruntime-node). A session cannot be shared between threads:
+ * the model pool's workers (model.worker.ts) each load one for the cameras that use it (or each
+ * camera its own with MODEL_WORKERS=0); the API loads one at startup to check the file and report it.
  */
 export async function loadOnnxModel(
   modelPath: string,
@@ -45,5 +53,34 @@ export async function loadOnnxModel(
     return { data: output.data as Float32Array, dims: output.dims };
   };
 
-  return { infer, inputName, outputName, provider };
+  const inferBatch = async (inputs: Float32Array[], size: number): Promise<ModelOutput[]> => {
+    if (inputs.length === 1) return [await infer(inputs[0], size)];
+    const one = 3 * size * size;
+    const batch = new Float32Array(inputs.length * one);
+    inputs.forEach((input, i) => batch.set(input, i * one));
+    const tensor = new ort.Tensor('float32', batch, [inputs.length, 3, size, size]);
+    const output = (await session.run({ [inputName]: tensor }))[outputName];
+    if (output.dims[0] !== inputs.length)
+      throw new Error(`A batch of ${inputs.length} gave [${output.dims.join(', ')}].`);
+    // Each frame's own rows, as [1, N, 6] (a copy each: the answers go to different threads).
+    const data = output.data as Float32Array;
+    const each = data.length / inputs.length;
+    return inputs.map((_, i) => ({
+      data: data.slice(i * each, (i + 1) * each),
+      dims: [1, ...output.dims.slice(1)]
+    }));
+  };
+
+  const batchSize = async (size: number, max: number): Promise<number> => {
+    if (max < 2) return 1;
+    try {
+      const blank = () => new Float32Array(3 * size * size);
+      await inferBatch([blank(), blank()], size);
+      return max;
+    } catch {
+      return 1; // a fixed batch of 1 (the Ultralytics export without dynamic=True)
+    }
+  };
+
+  return { infer, inferBatch, batchSize, inputName, outputName, provider };
 }

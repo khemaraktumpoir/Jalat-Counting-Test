@@ -8,7 +8,7 @@ import helmet from 'helmet';
 import * as morgan from 'morgan';
 import { resolve } from 'path';
 
-import { AppExceptionFilter, swaggerDescription, swaggerOptions } from '@common';
+import { AppExceptionFilter, swaggerDescription, swaggerOptions, U } from '@common';
 import { GqlAuthGuard, GqlAuthModule } from '@graphql/auth';
 import { ConfigModule, ConfigService } from '@lib/config';
 
@@ -43,6 +43,8 @@ async function bootstrap() {
   app.use(express.raw({ type: 'image/jpeg', limit: '3mb' }));
   app.use(compression());
   app.use(helmet({ contentSecurityPolicy: { reportOnly: true } }));
+  // The address in the log without the sign-in token (camera images take it as ?access_token=).
+  morgan.token('url', req => U.logUrl((req as express.Request).originalUrl ?? req.url ?? ''));
   // Not one log line per phone frame (several a second).
   app.use(
     morgan('dev', { skip: req => req.method === 'POST' && /\/frames(\?|$)/.test(req.url ?? '') })

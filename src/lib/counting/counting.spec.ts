@@ -1,4 +1,5 @@
 import { Detector, ModelOutput, parseDetections } from './detector';
+import { shrinkFrame } from './draw';
 import { LineCounter, segmentsIntersect } from './line-counter';
 import { CountingPipeline } from './pipeline';
 import { pointInPolygon, PolygonCounter } from './polygon-counter';
@@ -93,6 +94,19 @@ describe('parseDetections', () => {
     const parcels = parseDetections(out, lb, 640, 640, { conf: 0.5, classes: [0] });
     expect(parcels).toHaveLength(1);
     expect(parcels[0].box).toEqual({ x1: 10, y1: 10, x2: 50, y2: 50 });
+  });
+
+  it("counts the parcel model's words for one thing as one class (fold), then keeps the wanted ones", () => {
+    // parcel (0), mailer bag (1), gift bag (3): all "parcel"; a camera keeping class 0 counts them all.
+    const out = output([
+      [10, 10, 50, 50, 0.9, 0],
+      [60, 60, 90, 90, 0.8, 1],
+      [100, 100, 150, 150, 0.7, 3]
+    ]);
+    const fold = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+    const parcels = parseDetections(out, lb, 640, 640, { conf: 0.5, classes: [0], fold });
+    expect(parcels.map(d => d.classId)).toEqual([0, 0, 0]);
+    expect(parseDetections(out, lb, 640, 640, { conf: 0.5, classes: [0] })).toHaveLength(1);
   });
 
   it('refuses an output that is not [1, N, 6]', () => {
@@ -215,22 +229,92 @@ describe('PolygonCounter', () => {
     expect(pointInPolygon({ x: 50, y: 150 }, square)).toBe(false);
   });
 
+  /** A track seen on `hits` pictures. */
+  const seen = (hits: number, ...args: Parameters<typeof track>): Track => ({
+    ...track(...args),
+    hits
+  });
+
   it('counts IN on entering and OUT on leaving', () => {
     const counter = new PolygonCounter(square);
-    counter.update([track(1, null, [50, 150])], label);
-    expect(counter.update([track(1, [50, 150], [150, 150])], label)[0].direction).toBe('IN');
-    expect(counter.update([track(1, [150, 150], [250, 150])], label)[0].direction).toBe('OUT');
+    counter.update([seen(4, 1, null, [50, 150])], label);
+    expect(counter.update([seen(5, 1, [50, 150], [150, 150])], label)[0].direction).toBe('IN');
+    expect(counter.update([seen(6, 1, [150, 150], [250, 150])], label)[0].direction).toBe('OUT');
     expect(counter.counts()).toEqual({ in: 1, out: 1, byClass: { parcel: { in: 1, out: 1 } } });
   });
 
-  it('does not count a track first seen inside, nor jitter on the edge twice', () => {
+  it('counts parcels already lying in the area, once each, when seen on 4 pictures', () => {
     const counter = new PolygonCounter(square);
-    counter.update([track(1, null, [150, 150])], label);
-    counter.update([track(2, null, [95, 150])], label);
-    counter.update([track(2, [95, 150], [105, 150])], label);
-    counter.update([track(2, [105, 150], [95, 150])], label);
-    counter.update([track(2, [95, 150], [105, 150])], label);
+    const pile = (hits: number) => [
+      seen(hits, 1, null, [130, 130]),
+      seen(hits, 2, null, [170, 170])
+    ];
+    for (const hits of [1, 2, 3]) expect(counter.update(pile(hits), label)).toHaveLength(0);
+    expect(counter.update(pile(4), label)).toHaveLength(2);
+    expect(counter.update(pile(5), label)).toHaveLength(0);
+    expect(counter.counts().in).toBe(2);
+  });
+
+  it('never counts a box seen on fewer than 4 pictures, nor jitter on the edge twice', () => {
+    const counter = new PolygonCounter(square);
+    for (const hits of [1, 2, 3]) counter.update([seen(hits, 9, null, [150, 150])], label);
+    counter.update([seen(4, 2, null, [95, 150])], label);
+    counter.update([seen(5, 2, [95, 150], [105, 150])], label);
+    counter.update([seen(6, 2, [105, 150], [95, 150])], label);
+    counter.update([seen(7, 2, [95, 150], [105, 150])], label);
     expect(counter.counts()).toEqual({ in: 1, out: 1, byClass: { parcel: { in: 1, out: 1 } } });
+  });
+
+  it('does not count again a counted parcel lost from sight and found where it was', () => {
+    const counter = new PolygonCounter(square);
+    counter.update([seen(4, 1, null, [150, 150])], label);
+    counter.forget(new Set()); // someone stood over it: the tracker dropped it
+    counter.update([seen(4, 2, null, [152, 151])], label); // the same parcel, a new track, a little moved
+    counter.update([seen(4, 3, null, [115, 115])], label); // another parcel put down next to it
+    expect(counter.counts().in).toBe(2);
+  });
+
+  it('does not count one box drawn round two counted parcels as a third (27 Oct 2026: 4 for 3)', () => {
+    const counter = new PolygonCounter(square);
+    const box = (x1: number, y1: number, x2: number, y2: number) => ({ x1, y1, x2, y2 });
+    const parcel = (id: number, b: Track['box'], hits = 4): Track => ({
+      ...seen(hits, id, null, [(b.x1 + b.x2) / 2, (b.y1 + b.y2) / 2]),
+      box: b
+    });
+    // Two pink mailers overlapping, both counted.
+    counter.update([parcel(1, box(110, 110, 160, 150)), parcel(2, box(140, 130, 190, 170))], label);
+    expect(counter.counts().in).toBe(2);
+    // Some pictures later the model draws one box round both: not a new parcel.
+    counter.update(
+      [
+        parcel(1, box(110, 110, 160, 150), 9),
+        parcel(2, box(140, 130, 190, 170), 9),
+        parcel(3, box(108, 108, 192, 172))
+      ],
+      label
+    );
+    expect(counter.counts().in).toBe(2);
+  });
+
+  it('counts every parcel of a pile that only partly overlap each other (27 Oct 2026: 3 on the floor)', () => {
+    // The camera model's boxes on the floor picture: two pink mailers and an orange one, each
+    // overlapping its neighbours; together they cover most of the middle one.
+    const floor = [
+      { x: 300, y: 400 },
+      { x: 720, y: 400 },
+      { x: 720, y: 780 },
+      { x: 300, y: 780 }
+    ];
+    const counter = new PolygonCounter(floor);
+    const at = (id: number, x1: number, y1: number, x2: number, y2: number): Track => ({
+      ...seen(4, id, null, [(x1 + x2) / 2, (y1 + y2) / 2]),
+      box: { x1, y1, x2, y2 }
+    });
+    counter.update(
+      [at(1, 387, 612, 623, 757), at(2, 393, 496, 573, 575), at(3, 394, 538, 584, 651)],
+      label
+    );
+    expect(counter.counts().in).toBe(3);
   });
 
   it('needs 3 points', () => {
@@ -288,5 +372,32 @@ describe('ColorDetector (demo)', () => {
     expect(found[0].box.x2).toBeLessThanOrEqual(204);
     expect(found[0].box.y1).toBeGreaterThanOrEqual(76);
     expect(found[0].box.y2).toBeLessThanOrEqual(164);
+  });
+});
+
+describe('shrinkFrame (the live preview)', () => {
+  const frameOf = (width: number, height: number, rgb: (x: number, y: number) => number[]) => {
+    const data = new Uint8Array(width * height * 3);
+    for (let y = 0; y < height; y += 1)
+      for (let x = 0; x < width; x += 1) data.set(rgb(x, y), (y * width + x) * 3);
+    return { data, width, height };
+  };
+
+  it('halves a 1280×720 camera to 640×360, each pixel the average of its block', () => {
+    const big = frameOf(1280, 720, x => (x % 2 ? [200, 100, 0] : [100, 50, 0]));
+    const small = shrinkFrame(big, 640);
+    expect([small.width, small.height]).toEqual([640, 360]);
+    expect(Array.from(small.data.subarray(0, 3))).toEqual([150, 75, 0]);
+  });
+
+  it('shrinks a 1920×1080 camera by 3, and leaves a small frame as it is', () => {
+    expect(
+      shrinkFrame(
+        frameOf(1920, 1080, () => [0, 0, 0]),
+        640
+      ).width
+    ).toBe(640);
+    const small = frameOf(640, 360, () => [1, 2, 3]);
+    expect(shrinkFrame(small, 640)).toBe(small);
   });
 });
