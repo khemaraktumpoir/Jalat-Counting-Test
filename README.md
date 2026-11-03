@@ -15,16 +15,22 @@ service: no Python at runtime, several cameras, live counts for the apps, histor
 
 ## Current project status
 
-The counting service and photo-counting flow are implemented. This workspace has the pretrained
-`yolo26n.onnx` camera baseline and the exported YOLO-World / CLIP photo-counting models
-(`parcel-world-m.onnx`, `parcel-world-l.onnx`, `parcel-embed.onnx`). Those photo models are
-zero-shot exports: they do **not** mean a conveyor-specific parcel detector has been trained.
+As of 3 Nov 2026 (the full list, with what blocks each task, is in the [to-do](TODO.md)):
 
-The belt-model dataset in `../Jalat-Ultralytics-Service/datasets/parcels/` currently has no
-captured or labelled images, and `models/parcel.onnx` is not present. The next model milestone is
-to capture and label frames from the chosen pilot belt, then train, validate, and benchmark a
-parcel detector. See the [training guide](../Jalat-Ultralytics-Service/README.md),
-[rollout plan](docs/rollout-plan.md), and [TODO checklist](TODO.md).
+- **Built and on `master`:** live camera counting (line or area, IN / OUT, per class), cameras for
+  one or more warehouses with working hours, photo counts with duplicate detection and records,
+  a shared pool of model workers, a fair photo queue. Tested end to end on the test videos.
+- **Not deployed yet:** the production workflow stops at the Docker build because the repository
+  has no GitHub Actions secrets; the database also needs the new columns and table first (no
+  `DB_SYNC` in production).
+- **Models:** the cameras use `parcel-cam.onnx`, YOLO-World medium fine-tuned on 31 labelled
+  pickup photos (8 of 8 validation photos counted exactly); photos use the zero-shot
+  `parcel-world-m.onnx`. A fast YOLO26n **belt** model still needs frames from a real belt.
+- **First real cameras:** the CAB17 recorder's 8 channels are added (off), but the recorder
+  refuses connections from here, so there is no real belt footage yet.
+
+See also the [training guide](../Jalat-Ultralytics-Service/README.md) and the
+[rollout plan](docs/rollout-plan.md).
 
 ```
 ffmpeg (rgb24 frames at the camera's fps, scaled to width × height)
@@ -291,7 +297,8 @@ MQTT (retained, published only when the value changes):
 
 ```bash
 yarn test     # the core: preprocessing, parsing, tracker, line and area counters, pipeline,
-              # and the sample video end to end (7 parcels by hand, ± 1)
+              # and the sample video end to end (7 parcels by hand, ± 1); also the camera manager,
+              # model pool, photo queue, rules and repository (151 tests, 3 Nov 2026)
 ```
 
 ## Deploy
@@ -327,11 +334,14 @@ Service is set up to; `yarn install` turns the hooks on.
 
 ## Not done yet
 
-- A parcel model: YOLO26n fine-tuned on frames from the belts (the pretrained one knows COCO
-  objects, not parcels), and its `yarn model:bench` numbers on the server's CPU.
-- Recording an annotated video (the Ultralytics example writes one); a choice of trackers
-  (ByteTrack / BoT-SORT for crowded belts); several regions per camera; CSV export.
-- Load test with many cameras.
+The [to-do](TODO.md) is the checklist. In short:
+
+- **Deploy:** GitHub Actions secrets, the CSMS secret, the database columns, the models on the server.
+- **A real belt:** a reachable pilot camera, then frames, labels and a YOLO26n belt model with its
+  `yarn model:bench` numbers on the pilot machine.
+- **Scaling** steps 1, 5 and 7 (thread settings, `sharp`, a load test).
+- **Later:** an annotated video per camera, tracker choices (ByteTrack / BoT-SORT), several regions
+  per camera, CSV export.
 
 ## Scaling: many cameras and users
 
