@@ -6,9 +6,9 @@ Last updated 3 Nov 2026.
 
 ## Now: get it deployed
 
-The code is on `master` (37675e1, 3 Nov 2026), but the production workflow stops at "Build the
-docker image": the repository has no GitHub Actions secrets, so the image name is empty. Nothing
-has been deployed.
+The code is on `master` (37675e1, docs fe59acd, 3 Nov 2026), but the production workflow stops at
+"Build the docker image": the repository has no GitHub Actions secrets, so the image name is
+empty (4 runs failed so far, the last on fe59acd). Nothing has been deployed.
 
 - [ ] **Add the GitHub secrets** — **blocked: repository admin.** Settings → Secrets and variables
   → Actions: the `PROD_` names in `.github/workflows/production.yml` (`PROD_IMAGE_NAME`,
@@ -34,10 +34,15 @@ has been deployed.
 - [x] A camera can belong to several warehouses (`warehouseIds`), and has working hours
   (`startTime` / `endTime`, Asia/Phnom_Penh, overnight allowed).
 - [x] Added locally (3 Nov 2026): the CAB17 recorder's 8 channels as "CAB17 · Channel 1–8"
-  (`rtsp://…@cab17.cellcard.com.kh:554/Streaming/Channels/N01`, TEST WH 66, all off).
+  (`rtsp://…@cab17.cellcard.com.kh:554/Streaming/Channels/N01`, TEST WH 66); Channel 4 turned on,
+  the others off.
+- [x] Warehouse app (3 Nov 2026): when the counting service refuses the sign-in, every Count page
+  offers **Sign in again** (back to the same page after signing in), and an expired sign-in goes
+  to Sign in by itself.
 - [ ] **Reach the CAB17 recorder** — **blocked: whoever manages the recorder / Cellcard line.**
   `cab17.cellcard.com.kh` (203.144.76.16) refused ports 554, 80, 443 and 8000 from the office PC
-  and from Docker on 3 Nov 2026: offline, an IP allow-list, or no port forward on its router.
+  and from Docker on 3 Nov 2026 (checked twice): offline, an IP allow-list, or no port forward on
+  its router. Until then Channel 4 and "Belt 14" only show a connection error.
 - [ ] **Check "Belt 14"'s address** once the recorder answers: `…/Channels/40102` is not
   Hikvision's usual form (`401` main, `402` small stream of channel 4).
 - [ ] **Choose the pilot site and belt**, name the on-site camera owner, and the scan step its
@@ -88,10 +93,23 @@ has been deployed.
 
 ## Decisions
 
+Each with the option recommended for now; tick it once agreed, or write down the other choice.
+
 - [ ] One class (`parcel`) or boxes, bags and envelopes apart.
+  *Recommended: one class.* The counts the warehouse needs are totals; every model in use is
+  one class; separate classes need several times the labelled photos to stay accurate.
 - [ ] Who labels the photos and belt frames.
+  *Recommended: one named person per site labels with `make label` (the browser tool, about
+  1–2 minutes a photo), and a second person checks a sample before each training.*
 - [ ] A local PC per site or a shared server (each camera has one owner either way).
+  *Recommended: a local PC next to the cameras for counting, the photo counts on the shared
+  server.* A camera on the current model takes most of a PC's CPU, and streams over the internet
+  are not reliable (the CAB17 recorder is not reachable from the office); a local PC sends only
+  the counts (MQTT). This is README Scaling step 6, "two services".
 - [ ] How to meet Ultralytics' AGPL-3.0 licence before a commercial release.
+  *Recommended: ask for legal advice early.* Ultralytics is used only to train and export, but
+  its models are AGPL-3.0 too; the usual ways out are an Ultralytics Enterprise licence or a model
+  under a permissive licence.
 
 ## Housekeeping
 

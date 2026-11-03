@@ -4,7 +4,7 @@
 .PHONY: help dev build start test lint format \
 	up down restart logs ps health rebuild \
 	seed model-inspect model-bench model-try frames \
-	export export-photo export-embedder split train
+	export export-photo export-embedder split train train-photo
 
 # Use Git for Windows' bash for recipe shells (GNU Make on Windows can't run these via cmd.exe)
 ifeq ($(OS),Windows_NT)
@@ -12,13 +12,9 @@ SHELL := C:/Program Files/Git/bin/bash.exe
 .SHELLFLAGS := -c
 endif
 
-# Training and model export live next to this service, in Jalat-Ultralytics-Service
+# Training and model export live next to this service, in Jalat-Ultralytics-Service: its own
+# Makefile does the work (and writes into this service's models/); the targets below hand over to it.
 TRAIN := ../Jalat-Ultralytics-Service
-ifeq ($(OS),Windows_NT)
-PY := $(abspath $(TRAIN))/ultralytics/.venv313/Scripts/python.exe
-else
-PY := $(abspath $(TRAIN))/ultralytics/.venv313/bin/python
-endif
 
 PORT ?= 9096
 MODEL ?= models/yolo26n.onnx
@@ -114,27 +110,29 @@ frames:
 		echo "Give CAMERA=<id> TOKEN=<token>, or SOURCE=rtsp://… / a video file"; exit 1; \
 	fi
 
-# ---- Training ($(TRAIN)/README.md) ----
+# ---- Training: handed to $(TRAIN)'s Makefile (see its README); variables given here go along ----
 
-## export: YOLO26n to ONNX, end-to-end (nms=False), into models/
+## export: YOLO26n to ONNX, end-to-end (nms=False), into models/yolo26n.onnx
 export:
-	cd $(TRAIN)/ultralytics && $(PY) -c "from ultralytics import YOLO; YOLO('../weights/yolo26n.pt').export(format='onnx', imgsz=640, nms=False)"
-	mv $(TRAIN)/weights/yolo26n.onnx models/yolo26n.onnx
-	@echo "models/yolo26n.onnx ready: make model-inspect"
+	$(MAKE) -C $(TRAIN) export
 
-## export-photo: the parcel model for photo counts (YOLO-World medium, no training) into models/parcel-world-m.onnx
+## export-photo: the zero-shot parcel model (YOLO-World) into models/parcel-world-m.onnx (SIZE=m|l, or cam)
 export-photo:
-	cd $(TRAIN)/ultralytics && $(PY) -P ../export_parcel_world.py
+	$(MAKE) -C $(TRAIN) export-photo
 
 ## export-embedder: the parcel look-alike model for Count photos (CLIP) into models/parcel-embed.onnx
 export-embedder:
-	cd $(TRAIN) && $(PY) -P export_parcel_embedder.py
+	$(MAKE) -C $(TRAIN) export-embedder
 
 ## split: labelled frames into train / val (EXPORT=<the labelling tool's YOLO export>)
 split:
 	@test -n "$(EXPORT)" || (echo "Give EXPORT=<folder of the YOLO export>"; exit 1)
-	cd $(TRAIN) && $(PY) -P split_dataset.py "$(abspath $(EXPORT))"
+	$(MAKE) -C $(TRAIN) split EXPORT="$(abspath $(EXPORT))"
 
-## train: train the parcel model and export it to models/parcel.onnx (EPOCHS=100, DEVICE=cpu)
+## train-photo: YOLO-World fine-tuned on labelled photos → models/parcel-photo.onnx + parcel-cam.onnx (PHOTO_MODEL=l|m)
+train-photo:
+	$(MAKE) -C $(TRAIN) train-photo
+
+## train: the YOLO26n belt model → models/parcel.onnx (EPOCHS=100, DEVICE=cpu|0)
 train:
-	cd $(TRAIN) && $(PY) -P train_parcels.py --epochs $(or $(EPOCHS),100) --device $(or $(DEVICE),cpu)
+	$(MAKE) -C $(TRAIN) train
